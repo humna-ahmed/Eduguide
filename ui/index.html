@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<html>
+<head>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<h1>Student LMS Dashboard</h1>
+
+<button id="chatBtn">💬</button>
+
+<div id="chatPopup">
+  <iframe src="http://localhost:8000"></iframe>
+</div>
+
+<script>
+document.getElementById("chatBtn").onclick = () => {
+  const p = document.getElementById("chatPopup");
+  p.style.display = p.style.display === "none" ? "block" : "none";
+};
+</script>
+
+</body>
+</html>

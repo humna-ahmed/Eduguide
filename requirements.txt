@@ -1,0 +1,8 @@
+flask
+chainlit
+openai
+scikit-learn
+pandas
+numpy
+streamlit
+bcrypt
