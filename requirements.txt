@@ -1,8 +1,13 @@
 flask
+flask-cors
 chainlit
 openai
+openai-agents
+agents
 scikit-learn
 pandas
-numpy
+numpy==1.19.5
 streamlit
+streamlit-js-eval
 bcrypt
+nest-asyncio

@@ -8,28 +8,34 @@ from agents import (
     Runner,
     RunConfig,
     OpenAIChatCompletionsModel,
+    SQLiteSession,
     function_tool
 )
 from openai import AsyncOpenAI
 
-
 # =========================================================
-# MODEL SETUP
+# MODEL SETUP (OPENAI - CLEAN)
 # =========================================================
 
-external_client = AsyncOpenAI(
-    base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
-    api_key="AIzaSyDVrcNw9wjkBESw6WM4iRWLkSsxvPoalZI"
+from openai import AsyncOpenAI
+
+# Use OpenAI directly (no base_url needed)
+openai_client = AsyncOpenAI(
+    api_key="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" 
 )
 
+# Choose a model (recommended: gpt-4o-mini for cost efficiency)
 model = OpenAIChatCompletionsModel(
-    model="gemini-2.5-flash",
-    openai_client=external_client
+    model="gpt-4o-mini",
+    openai_client=openai_client
 )
 
 config = RunConfig(model=model)
 
-
+# =========================================================
+# SESSION MEMORY
+# =========================================================
+memory = SQLiteSession(session_id="conversation_123")
 # =========================================================
 # ASYNC DB LOGIC (WRAPS SQLITE – SAFE)
 # =========================================================
@@ -39,11 +45,12 @@ async def _get_course_data_async(
     student_id: int,
     db: sqlite3.Connection
 ) -> Dict[str, Any]:
+    course_name = course_name.strip() 
 
     cursor = db.cursor()
 
     cursor.execute(
-        "SELECT course_id FROM courses WHERE course_name = ?",
+        "SELECT course_id FROM courses WHERE LOWER(course_name) = LOWER(?)",
         (course_name,)
     )
     course = cursor.fetchone()
@@ -124,11 +131,12 @@ async def _get_performance_data_async(
     student_id: int,
     db: sqlite3.Connection
 ) -> Dict[str, Any]:
+    course_name = course_name.strip() 
 
     cursor = db.cursor()
 
     cursor.execute(
-        "SELECT course_id FROM courses WHERE course_name=?",
+        "SELECT course_id FROM courses WHERE LOWER(course_name) = LOWER(?)",
         (course_name,)
     )
     course = cursor.fetchone()
@@ -163,12 +171,13 @@ async def _get_course_analysis_async(
     student_id: int,
     db: sqlite3.Connection
 ) -> Dict[str, Any]:
+    course_name = course_name.strip() 
 
     cursor = db.cursor()
 
     if course_name:
         cursor.execute(
-            "SELECT course_id FROM courses WHERE course_name=?",
+            "SELECT course_id FROM courses WHERE LOWER(course_name) = LOWER(?)",
             (course_name,)
         )
         course = cursor.fetchone()
@@ -178,7 +187,7 @@ async def _get_course_analysis_async(
 
         course_ids = [(course[0], course_name)]
     else:
-        cursor.execute("SELECT course_id, course_name FROM courses")
+        cursor.execute("SELECT course_id FROM courses WHERE LOWER(course_name) = LOWER(?)")
         course_ids = cursor.fetchall()
 
     analysis = []
@@ -608,7 +617,8 @@ async def main():
         result = await Runner.run(
             starting_agent=triage_agent,
             input="Show quiz 1 marks in Calculus",
-            run_config=config
+            run_config=config,
+            session = memory
         )
         
         print("\n" + "="*50)

@@ -14,7 +14,7 @@ PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, PROJECT_ROOT)
 
 
-from backend.agentic_architecture.agent import build_agents, config
+from backend.agentic_architecture.agent import build_agents, config, memory
 from agents import Runner
 
 # --------------------------------------------------
@@ -759,7 +759,8 @@ elif page == "🤖 AI Assistant":
                     Runner.run(
                         starting_agent=triage_agent,
                         input=prompt,
-                        run_config=config
+                        run_config=config,
+                        session=memory
                     )
                 )
 
