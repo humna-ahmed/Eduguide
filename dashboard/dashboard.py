@@ -384,9 +384,24 @@ if page == "🏠 Dashboard":
         for course_name in selected_courses:
             course_id = course_map[course_name]
             
+            # Fetch credit hours for the course
+            cur.execute("""
+                SELECT credit_hours
+                FROM courses
+                WHERE course_id = ?
+            """, (course_id,))
+            credit_result = cur.fetchone()
+            credit_hours = credit_result[0] if credit_result else 3
+            
+            # Display course card with credit hours
             st.markdown(f"""
             <div class="course-card">
-                <h4 style="margin:0; color: white;">📖 {course_name}</h4>
+                <div style="display: flex; justify-content: space-between; align-items: center;">
+                    <h4 style="margin:0; color: white;">📖 {course_name}</h4>
+                    <span style="background: rgba(255,255,255,0.2); padding: 4px 8px; border-radius: 6px; font-size: 0.8rem;">
+                        {credit_hours} Credit Hours
+                    </span>
+                </div>
             </div>
             """, unsafe_allow_html=True)
 
@@ -501,10 +516,21 @@ elif page == "👤 Personal Info":
     
     st.markdown("---")
     
-    # Course Enrollment Section
+    # Course Enrollment Section with Credit Hours
     st.markdown("### 📚 Course Enrollment")
     
     if course_names:
+        # Fetch credit hours for courses
+        credit_hours_dict = {}
+        for course_name in course_names:
+            cur.execute("""
+                SELECT credit_hours
+                FROM courses
+                WHERE course_name = ?
+            """, (course_name,))
+            result = cur.fetchone()
+            credit_hours_dict[course_name] = result[0] if result else 3
+        
         # Create columns for courses (3 per row)
         cols = st.columns(3, gap="medium")
         
@@ -522,11 +548,18 @@ elif page == "👤 Personal Info":
                         <h4 style="margin:0; color: #1e293b;">Course {idx + 1}</h4>
                     </div>
                     <p style="margin:0; font-size: 1rem; font-weight: 600; color: #334155;">{course}</p>
+                    <p style="margin:0.5rem 0 0 0; font-size: 0.85rem; color: #64748b;">
+                        ⏱️ Credit Hours: {credit_hours_dict[course]}
+                    </p>
                 </div>
                 """, unsafe_allow_html=True)
+        
+        # Calculate and show total credit hours
+        total_credits = sum(credit_hours_dict.values())
+        st.info(f"📊 **Total Credit Hours this semester: {total_credits}**")
+        
     else:
         st.info("No courses enrolled for this semester.")
-
 # ==================================================
 # PAGE: QUIZZES
 # ==================================================

@@ -7,10 +7,17 @@ DB_PATH = os.path.join(BASE_DIR, "lms.db")
 conn = sqlite3.connect(DB_PATH)
 cur = conn.cursor()
 
-# Add courses
-courses = ["Calculus", "Functional English", "Physics", "Programming"]
-for c in courses:
-    cur.execute("INSERT OR IGNORE INTO courses (course_name) VALUES (?)", (c,))
+# Add courses with credit hours
+courses = [
+    ("Calculus", 3),
+    ("Functional English", 2),
+    ("Physics", 3),
+    ("Programming", 3)
+]
+
+for course_name, credit_hours in courses:
+    cur.execute("INSERT OR IGNORE INTO courses (course_name, credit_hours) VALUES (?, ?)", 
+                (course_name, credit_hours))
 
 # Get student_id
 cur.execute("SELECT student_id FROM students WHERE registration_no = ?", ("2021-CS-001",))
@@ -21,17 +28,17 @@ for course_id in range(1, 5):
     cur.execute("""
     INSERT OR REPLACE INTO marks (student_id, course_id, midterm)
     VALUES (?, ?, ?)
-    """, (student_id, course_id, 15))  # Only midterm, final is NULL
+    """, (student_id, course_id, 15))
 
-# Add quiz marks for this student (4 quizzes per course, each out of 2.5)
+# Add quiz marks
 quiz_data = []
-quiz_scores = [2.0, 2.3, 1.8, 2.2]  # Example scores out of 2.5 each
-for course_id in range(1, 5):  # 4 courses
-    for quiz_num in range(1, 5):  # 4 quizzes
+quiz_scores = [2.0, 2.3, 1.8, 2.2]
+for course_id in range(1, 5):
+    for quiz_num in range(1, 5):
         quiz_data.append((
             student_id, course_id, f"Quiz {quiz_num}", 
-            quiz_scores[quiz_num-1],  # marks_obtained (out of 2.5)
-            2.5  # max_marks
+            quiz_scores[quiz_num-1],
+            2.5
         ))
 
 for data in quiz_data:
@@ -40,15 +47,15 @@ for data in quiz_data:
     VALUES (?, ?, ?, ?, ?)
     """, data)
 
-# Add assignment marks for this student (4 assignments per course, each out of 5)
+# Add assignment marks
 assignment_data = []
-assign_scores = [4.0, 4.5, 3.8, 4.2]  # Example scores out of 5 each
-for course_id in range(1, 5):  # 4 courses
-    for assign_num in range(1, 5):  # 4 assignments
+assign_scores = [4.0, 4.5, 3.8, 4.2]
+for course_id in range(1, 5):
+    for assign_num in range(1, 5):
         assignment_data.append((
             student_id, course_id, f"Assignment {assign_num}",
-            assign_scores[assign_num-1],  # marks_obtained (out of 5)
-            5  # max_marks
+            assign_scores[assign_num-1],
+            5
         ))
 
 for data in assignment_data:
@@ -59,4 +66,4 @@ for data in assignment_data:
 
 conn.commit()
 conn.close()
-print("✅ Test courses and marks added with separate quiz/assignment tables")
+print("✅ Test courses and marks added with credit hours")

@@ -19,15 +19,16 @@ CREATE TABLE IF NOT EXISTS students (
 )
 """)
 
-# Courses table
+# Courses table with credit_hours
 cur.execute("""
 CREATE TABLE IF NOT EXISTS courses (
     course_id INTEGER PRIMARY KEY AUTOINCREMENT,
-    course_name TEXT UNIQUE
+    course_name TEXT UNIQUE,
+    credit_hours INTEGER DEFAULT 3
 )
 """)
 
-# Quizzes table - NEW TABLE for separate quiz marks
+# Quizzes table
 cur.execute("""
 CREATE TABLE IF NOT EXISTS quizzes (
     quiz_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -41,7 +42,7 @@ CREATE TABLE IF NOT EXISTS quizzes (
 )
 """)
 
-# Assignments table - NEW TABLE for separate assignment marks
+# Assignments table
 cur.execute("""
 CREATE TABLE IF NOT EXISTS assignments (
     assignment_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -55,7 +56,7 @@ CREATE TABLE IF NOT EXISTS assignments (
 )
 """)
 
-# Marks table - for midterm and final (final will be NULL until predicted)
+# Marks table
 cur.execute("""
 CREATE TABLE IF NOT EXISTS marks (
     mark_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -83,4 +84,4 @@ CREATE TABLE IF NOT EXISTS attendance (
 
 conn.commit()
 conn.close()
-print("Database initialized at:", DB_PATH)
+print("Database initialized with credit_hours at:", DB_PATH)
