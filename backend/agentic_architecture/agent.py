@@ -1,4 +1,5 @@
 # agent.py
+import os
 import asyncio
 import sqlite3
 from typing import Dict, Any, Optional
@@ -12,7 +13,9 @@ from agents import (
     function_tool
 )
 from openai import AsyncOpenAI
+from dotenv import load_dotenv
 
+load_dotenv()
 # =========================================================
 # MODEL SETUP (OPENAI - CLEAN)
 # =========================================================
@@ -21,7 +24,7 @@ from openai import AsyncOpenAI
 
 # Use OpenAI directly (no base_url needed)
 openai_client = AsyncOpenAI(
-    api_key="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" 
+    api_key=os.getenv("OPENAI_API_KEY") 
 )
 
 # Choose a model (recommended: gpt-4o-mini for cost efficiency)
@@ -32,10 +35,17 @@ model = OpenAIChatCompletionsModel(
 
 config = RunConfig(model=model)
 
+ft_model = OpenAIChatCompletionsModel(
+    model="ft:gpt-4o-mini-2024-07-18:personal::DUsZGTcV",
+    openai_client=openai_client
+)
+
 # =========================================================
 # SESSION MEMORY
 # =========================================================
+
 memory = SQLiteSession(session_id="conversation_123")
+
 # =========================================================
 # ASYNC DB LOGIC (WRAPS SQLITE – SAFE)
 # =========================================================
@@ -228,8 +238,47 @@ def build_tools(student_id: int, db: sqlite3.Connection):
     @function_tool
     async def get_course_analysis(course_name: Optional[str] = None):
         return await _get_course_analysis_async(course_name, student_id, db)
+    
+    @function_tool
+    async def compute_final_result(
+        quiz_total: float,
+        assignment_total: float,
+        midterm_marks: float,
+        predicted_final_exam: float
+    ):
+        total = quiz_total + assignment_total + midterm_marks + predicted_final_exam
+        percentage = total  # already out of 100
+    
+        if percentage >= 85:
+            grade = "A"
+        elif percentage >= 80:
+            grade = "A-"
+        elif percentage >= 75:
+            grade = "B+"
+        elif percentage >= 71:
+            grade = "B"
+        elif percentage >= 68:
+            grade = "B-"
+        elif percentage >= 64:
+            grade = "C+"
+        elif percentage >= 60:
+            grade = "C"
+        elif percentage >= 57:
+            grade = "C-"
+        elif percentage >= 53:
+            grade = "D+"
+        elif percentage >= 50:
+            grade = "D"
+        else:
+            grade = "F"
+    
+        return {
+            "total_marks": round(total, 2),
+            "percentage": round(percentage, 2),
+            "grade": grade
+        }
 
-    return [get_course_data, get_performance_data, get_course_analysis]
+    return [get_course_data, get_performance_data, get_course_analysis, compute_final_result]
 
 
 # =========================================================
@@ -332,43 +381,48 @@ YOU MUST NOT default to Calculus or any course.
     
     predictive_agent = Agent(
         name="Prediction Agent",
-        model=model,
+        model=ft_model,
         instructions="""
         You are the Academic Prediction Agent.
+
+        Your job is to:
+        1. Predict the student's final exam score (out of 50)
+        2. Then compute final total marks and grade USING A TOOL
+
+        WORKFLOW (STRICT):
+
+        1. ALWAYS call get_course_data first
+        2. From the result, calculate:
+           - total quiz marks (out of 10)
+           - total assignment marks (out of 20)
+           - midterm marks (out of 20)
+
+        3. Predict final exam marks (out of 50) using:
+           - performance trends
+           - consistency
+           - attendance
         
-        RESPONSIBILITIES:
-        1. Predict final exam performance based on current academic standing
-        2. Analyze quiz, assignment, and midterm performance patterns
-        3. Provide realistic score ranges (pessimistic, realistic, optimistic)
-        4. Identify strengths and weaknesses that may affect final performance
-        5. Give actionable recommendations for improvement
+        4. AFTER prediction → CALL compute_final_result tool
         
-        METHODOLOGY:
-        1. Calculate weighted average: Quizzes (20%), Assignments (30%), Midterm (50%)
-        2. Adjust for consistency (performance stability over time)
-        3. Consider attendance impact (regular attendance improves performance)
-        4. Provide predictions out of 50 marks for final exam
+        5. NEVER manually calculate final grade yourself
         
-        PREDICTION RANGES:
-        - Optimistic: Current performance × 1.15 (max 50)
-        - Realistic: Current performance × consistency factor
-        - Pessimistic: Current performance × 0.85
+        OUTPUT FORMAT:
         
-        RESPONSE FORMAT:
-        1. Start with current performance analysis
-        2. Show calculation methodology briefly
-        3. Present prediction ranges in clear table
-        4. Include actionable recommendations
-        5. End with motivational note
+        📊 Current Performance Summary  
+        🔮 Predicted Final Exam Score (range)  
+        🏁 Final Result (from tool):
+        - Total Marks: X/100  
+        - Percentage: X%  
+        - Grade: X  
         
-        IMPORTANT NOTES:
-        - Final exam is worth 50 marks out of 100 total
-        - Current available marks: 50/100 (quizzes 10 + assignments 20 + midterm 20)
-        - Prediction confidence depends on data completeness
-        - Always be encouraging but realistic
+        IMPORTANT RULES:
+        
+        - ALWAYS use tools for calculations
+        - NEVER guess totals manually
+        - NEVER skip tool usage
         """,
         handoff_description="Specialist agent for academic predictions and final exam forecasting",
-        tools=[tools[1], tools[2]]
+        tools=tools
     )
 
     planner_agent = Agent(
