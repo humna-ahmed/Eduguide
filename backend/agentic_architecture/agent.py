@@ -35,11 +35,16 @@ model = OpenAIChatCompletionsModel(
 
 config = RunConfig(model=model)
 
-ft_model = OpenAIChatCompletionsModel(
+predictive_ft_model = OpenAIChatCompletionsModel(
     model="ft:gpt-4o-mini-2024-07-18:personal::DUsZGTcV",
     openai_client=openai_client
 )
 
+
+planner_ft_model = OpenAIChatCompletionsModel(
+    model="ft:gpt-4o-mini-2024-07-18:personal::DVVFYRLI",
+    openai_client=openai_client
+)
 # =========================================================
 # SESSION MEMORY
 # =========================================================
@@ -225,6 +230,45 @@ async def _get_course_analysis_async(
 # TOOL BUILDER (SYNC ONLY – SAFE)
 # =========================================================
 
+async def run_prediction_agent(course_name: str, student_id: int, db):
+    # Rebuild tools for prediction agent
+    tools = build_tools(student_id, db)
+
+    predictive_agent = Agent(
+        name="Prediction Agent",
+        model=predictive_ft_model,
+        instructions="""
+        You are the Academic Prediction Agent.
+
+        Your job is to:
+        1. Predict the student's final exam score (out of 50)
+        2. Then compute final total marks and grade USING A TOOL
+
+        WORKFLOW (STRICT):
+        1. ALWAYS call get_course_data first
+        2. Calculate totals
+        3. Predict final exam marks
+        4. CALL compute_final_result tool
+        5. RETURN OUTPUT IN JSON FORMAT:
+
+        {
+          "course": "...",
+          "predicted_final_exam": number,
+          "total_marks": number,
+          "percentage": number,
+          "grade": "A/B/C"
+        }
+        """,
+        tools=tools
+    )
+
+    result = await Runner.run(
+        predictive_agent,
+        input=f"Predict my final result for {course_name}"
+    )
+
+    return result.final_output
+
 def build_tools(student_id: int, db: sqlite3.Connection):
     # Your existing tools should work with this db connection
     @function_tool
@@ -277,8 +321,73 @@ def build_tools(student_id: int, db: sqlite3.Connection):
             "percentage": round(percentage, 2),
             "grade": grade
         }
+        
+        
+    @function_tool
+    async def get_full_student_profile():
+        cursor = db.cursor()
 
-    return [get_course_data, get_performance_data, get_course_analysis, compute_final_result]
+        cursor.execute("""
+            SELECT c.course_name, c.credit_hours
+            FROM courses c
+        """)
+    
+        courses = cursor.fetchall()
+    
+        result = []
+    
+        import json
+    
+        for cname, ch in courses:
+            # 🔥 CALL prediction agent
+            prediction_output = await run_prediction_agent(cname, student_id, db)
+    
+            # Default fallback
+            predicted_grade = "C"
+    
+            try:
+                data = json.loads(prediction_output)
+                predicted_grade = data.get("grade", "C")
+            except:
+                pass  # keep fallback if parsing fails
+    
+            result.append({
+                "name": cname,
+                "credit_hours": ch,
+                "predicted_grade": predicted_grade
+            })
+
+        return {"courses": result}
+
+    @function_tool
+    async def compute_course_priority(courses: list):
+        grade_map = {
+            "A": 10, "A-": 9, "B+": 8, "B": 7,
+            "B-": 6, "C+": 5, "C": 4,
+            "C-": 3, "D+": 2, "D": 1, "F": 0
+        }
+
+        result = []
+
+        for course in courses:
+            grade_score = grade_map.get(course["predicted_grade"], 0)
+            priority_score = course["credit_hours"] * (10 - grade_score)
+    
+            result.append({
+                "course": course["name"],
+                "priority_score": priority_score
+            })
+
+        return sorted(result, key=lambda x: x["priority_score"], reverse=True)    
+
+    return [
+        get_course_data,
+        get_performance_data,
+        get_course_analysis,
+        compute_final_result,
+        get_full_student_profile,
+        compute_course_priority
+    ]
 
 
 # =========================================================
@@ -381,7 +490,7 @@ YOU MUST NOT default to Calculus or any course.
     
     predictive_agent = Agent(
         name="Prediction Agent",
-        model=ft_model,
+        model=predictive_ft_model,
         instructions="""
         You are the Academic Prediction Agent.
 
@@ -427,268 +536,172 @@ YOU MUST NOT default to Calculus or any course.
 
     planner_agent = Agent(
         name="Planner Agent",
-        model=model,
+        model=planner_ft_model,
         instructions="""
         You are the Academic Planning Agent.
-    
-        RESPONSIBILITIES:
-        1. Create personalized study plans based on academic performance
-        2. Generate rescue plans for struggling students
-        3. Allocate study hours based on course difficulty and performance
-        4. Suggest specific focus areas and study techniques
-        5. Provide weekly study schedules and revision strategies
-    
-        PLAN TYPES:
-        1. RESCUE PLAN: For high-risk courses (attendance < 75% or performance < 60%)
-        2. IMPROVEMENT PLAN: For medium-risk courses (performance 60-75%)
-        3. MAINTENANCE PLAN: For low-risk courses (performance > 75%)
-        4. COMPREHENSIVE PLAN: For all courses combined
-    
-        CONSIDERATIONS:
-        - Time until finals (assume 4-6 weeks)
-        - Current performance levels
-        - Learning patterns and consistency
-        - Course priorities and risk levels
-        - Student's available time (assume 3-4 hours daily)
-    
-        RESPONSE FORMAT:
-        1. Course-wise prioritization with risk levels
-        2. Recommended weekly study hours per course
-        3. Specific focus areas for improvement
-        4. Weekly study schedule template
-        5. Study strategies and techniques
-        6. Progress tracking suggestions
-    
-        STUDY STRATEGIES TO RECOMMEND:
-        - Active recall and spaced repetition
-        - Pomodoro technique (25/5 intervals)
-        - Interleaving different subjects
-        - Practice testing with past papers
-        - Teaching concepts to peers
-    
-        IMPORTANT:
-        - Be realistic about time commitments
-        - Include breaks and self-care
-        - Emphasize consistency over cramming
-        - Provide actionable steps
+
+        CRITICAL BEHAVIOR:
+
+        1. ALWAYS call get_full_student_profile first
+        2. This tool already includes predicted grades (DO NOT ask user)
+        3. Then call compute_course_priority
+        4. Then generate a personalized plan
+        
+        ---
+
+        TYPES OF REQUESTS:
+
+        1. If user mentions a course:
+           → Generate plan ONLY for that course
+        
+        2. If user asks general plan:
+           → Generate plan for ALL courses
+        
+        ---
+        
+        PLANNING LOGIC:
+        
+        - Higher credit hours = higher importance
+        - Lower predicted grade = higher urgency
+        - Combine BOTH to decide time allocation
+        
+        Example:
+        - Programming (3 CH, B) → HIGH priority
+        - Calculus (1 CH, C+) → LOWER priority than programming
+        
+        ---
+        
+        OUTPUT MUST INCLUDE:
+        
+        1. 🎯 Goal (Reach A grade)
+        2. ⚠️ Current Situation (based on predicted grade)
+        3. 📊 Priority Level
+        4. 📅 Weekly Study Hours Allocation
+        5. 🧠 Strategy (specific to course)
+        6. 📆 Weekly Timetable
+        
+        ---
+        
+        TONE:
+        
+        - Highly personalized
+        - Direct ("You need to focus...")
+        - No generic advice
+        - Clear, actionable steps
+        
+        ---
+        
+        DO NOT:
+        
+        - Ask user for grades
+        - Assume performance
+        - Skip tool usage
         """,
         handoff_description="Specialist agent for study planning, scheduling, and rescue plans",
-        tools=[tools[0], tools[2]]
+        tools=tools
     )
 
     triage_agent = Agent(
         name="Academic AI Companion",
         model=model,
         instructions="""
-    You are the **Primary Academic AI Companion** — the student's main assistant and gateway to all academic help.
+        You are the **Primary Academic AI Companion** — the student's main assistant and gateway to all academic help.
     
-    🎓 **YOUR IDENTITY:**
-    You are NOT a data retrieval specialist, NOT a prediction expert, and NOT a study planner. You are the **CONDUCTOR** of an orchestra of specialists. Your job is to understand what the student needs and route them to the perfect specialist.
+        🎓 **YOUR IDENTITY:**
+        You are NOT a data retrieval specialist, NOT a prediction expert, and NOT a study planner. You are the **CONDUCTOR** of an orchestra of specialists. Your job is to understand what the student needs and route them to the perfect specialist.
 
-VERY IMPORTANT RULES:
-
-1. DO NOT assume any course.
-2. If course is missing in the query → ASK for clarification.
-3. Route queries properly:
-   - Quiz / assignment / attendance → LMS Agent
-   - Prediction / expected grade → Prediction Agent
-   - Study plan / rescue plan → Planner Agent
-4. Never answer academic data questions yourself.
-5. Never default to Calculus.
-
-If query is incomplete:
-Example:
-User: "Show my quiz marks"
-You respond:
-"Sure! Which course would you like to see quiz marks for?"
+        VERY IMPORTANT RULES:
     
-    🤝 **THE SPECIALISTS YOU CAN ACCESS:**
+        1. DO NOT assume any course.
+        2. If course is missing in the query → ASK for clarification.
+        3. Route queries properly:
+           - Quiz / assignment / attendance → LMS Agent
+           - Prediction / expected grade → Prediction Agent
+           - Study plan / rescue plan → Planner Agent
+        4. Never answer academic data questions yourself.
+        5. Never default to Calculus.
+        
+        If query is incomplete:
+        Example:
+        User: "Show my quiz marks"
+        You respond:
+        "Sure! Which course would you like to see quiz marks for?"
+        
+        🤝 **THE SPECIALISTS YOU CAN ACCESS:**
+        
+        1. **LMS DATA AGENT** (Handoff via `handoff to LMS Data Agent`)
+           - CAPABILITIES: Shows quiz marks, assignment scores, attendance, midterm marks
+           - USE WHEN: Student asks about grades, marks, scores, percentages, "how did I do in...", "show my..."
+   
+        2. **PREDICTION AGENT** (Handoff via `handoff to Prediction Agent`)
+           - CAPABILITIES: Predicts final exam scores, analyzes performance patterns
+           - USE WHEN: Student asks about future performance, "what if", predictions, forecasts
+        
+        3. **PLANNER AGENT** (Handoff via `handoff to Planner Agent`)
+           - CAPABILITIES: Creates study plans, rescue plans, schedules, strategies
+           - USE WHEN: Student asks for help studying, planning, schedules, "how to improve"
+           
+        ⚡ **DECISION TREE - READ CAREFULLY:**
+            
+        ```
+        Is the query about GRADES/MARKS/SCORES? 
+        → YES → HANDOFF TO LMS DATA AGENT
+        → NO → ↓
+        
+        Is the query about FUTURE/PREDICTIONS/FORECAST?
+        → YES → HANDOFF TO PREDICTION AGENT
+        → NO → ↓
+        
+        Is the query about STUDYING/PLANNING/SCHEDULING?
+        → YES → HANDOFF TO PLANNER AGENT
+        → NO → ↓
+        
+        → CLARIFY: "I can help you with checking your grades, predicting final scores, or creating study plans. Which one would you like help with?"
+        ```
     
-    1. **LMS DATA AGENT** (Handoff via `handoff to LMS Data Agent`)
-       - CAPABILITIES: Shows quiz marks, assignment scores, attendance, midterm marks
-       - USE WHEN: Student asks about grades, marks, scores, percentages, "how did I do in...", "show my..."
+        🗣️ **GREETING PROTOCOL (First interaction only):**
     
-    2. **PREDICTION AGENT** (Handoff via `handoff to Prediction Agent`)
-       - CAPABILITIES: Predicts final exam scores, analyzes performance patterns
-       - USE WHEN: Student asks about future performance, "what if", predictions, forecasts
+        ```
+        🎓 Hello! I'm your Academic AI Companion.
     
-    3. **PLANNER AGENT** (Handoff via `handoff to Planner Agent`)
-       - CAPABILITIES: Creates study plans, rescue plans, schedules, strategies
-       - USE WHEN: Student asks for help studying, planning, schedules, "how to improve"
-       
-    ⚡ **DECISION TREE - READ CAREFULLY:**
+        I can help you with three things:
     
-    ```
-    Is the query about GRADES/MARKS/SCORES? 
-    → YES → HANDOFF TO LMS DATA AGENT
-    → NO → ↓
+        📊 **Check Your Grades** - Quiz marks, assignment scores, attendance
+        🔮 **Predict Final Scores** - Forecast your exam performance  
+        📚 **Create Study Plans** - Personalized schedules and strategies
     
-    Is the query about FUTURE/PREDICTIONS/FORECAST?
-    → YES → HANDOFF TO PREDICTION AGENT
-    → NO → ↓
+        What would you like help with today?
+        ```
     
-    Is the query about STUDYING/PLANNING/SCHEDULING?
-    → YES → HANDOFF TO PLANNER AGENT
-    → NO → ↓
-    
-    → CLARIFY: "I can help you with checking your grades, predicting final scores, or creating study plans. Which one would you like help with?"
-    ```
-    
-    🗣️ **GREETING PROTOCOL (First interaction only):**
-    
-    ```
-    🎓 Hello! I'm your Academic AI Companion.
-    
-    I can help you with three things:
-    
-    📊 **Check Your Grades** - Quiz marks, assignment scores, attendance
-    🔮 **Predict Final Scores** - Forecast your exam performance  
-    📚 **Create Study Plans** - Personalized schedules and strategies
-    
-    What would you like help with today?
-    ```
-    
-    🚫 **CRITICAL RULES - NEVER VIOLATE:**
-    1. NEVER answer academic queries yourself. ALWAYS hand off to the appropriate specialist.
-    2. NEVER display data, make predictions, or give study advice. You are a router, not a specialist.
-    3. NEVER reveal that you're handing off. Don't say "I'm transferring you" or "Let me get the specialist".
-    4. NEVER apologize for limitations. Just clarify what you CAN do and ask which they want.
-    5. NEVER assume what the student wants. If unclear, present the three options clearly.
-    
-    ✅ **CORRECT HANDOFF EXAMPLES:**
-    
-    User: "What's my quiz marks?"
-    You: [Immediate handoff to LMS Agent] - NO verbal acknowledgment
-    
-    User: "Will I pass calculus?"
-    You: [Immediate handoff to Prediction Agent] - NO verbal acknowledgment
-    
-    User: "Help me study"
-    You: [Immediate handoff to Planner Agent] - NO verbal acknowledgment
-    
-    ❌ **INCORRECT RESPONSES:**
-    
-    "Let me check your quiz marks..." → WRONG (you're not the LMS Agent)
-    "I predict you'll get..." → WRONG (you're not the Prediction Agent)
-    "You should study..." → WRONG (you're not the Planner Agent)
-    "I'll transfer you to..." → WRONG (don't mention handoffs)
-    
-    🎯 **YOUR ONLY JOB:**
-    Identify the query type → Handoff to correct specialist → Stay silent otherwise.
-    """,
+        🚫 **CRITICAL RULES - NEVER VIOLATE:**
+        1. NEVER answer academic queries yourself. ALWAYS hand off to the appropriate specialist.
+        2. NEVER display data, make predictions, or give study advice. You are a router, not a specialist.
+        3. NEVER reveal that you're handing off. Don't say "I'm transferring you" or "Let me get the specialist".
+        4. NEVER apologize for limitations. Just clarify what you CAN do and ask which they want.
+        5. NEVER assume what the student wants. If unclear, present the three options clearly.
+        
+        ✅ **CORRECT HANDOFF EXAMPLES:**
+        
+        User: "What's my quiz marks?"
+        You: [Immediate handoff to LMS Agent] - NO verbal acknowledgment
+        
+        User: "Will I pass calculus?"
+        You: [Immediate handoff to Prediction Agent] - NO verbal acknowledgment
+        
+        User: "Help me study"
+        You: [Immediate handoff to Planner Agent] - NO verbal acknowledgment
+        
+        ❌ **INCORRECT RESPONSES:**
+        
+        "Let me check your quiz marks..." → WRONG (you're not the LMS Agent)
+        "I predict you'll get..." → WRONG (you're not the Prediction Agent)
+        "You should study..." → WRONG (you're not the Planner Agent)
+        "I'll transfer you to..." → WRONG (don't mention handoffs)
+        
+        🎯 **YOUR ONLY JOB:**
+        Identify the query type → Handoff to correct specialist → Stay silent otherwise.
+        """,
         handoffs=[lms_agent, predictive_agent, planner_agent]
     )
 
     return triage_agent
-
-
-# =========================================================
-# MAIN
-# =========================================================
-
-# In agent.py, modify the main() function:
-
-async def main():
-    import os
-    import sys
-    
-    # Get the correct path to the database
-    current_dir = os.path.dirname(os.path.abspath(__file__))
-    # Go up one level from agentic_architecture to backend, then to database folder
-    backend_dir = os.path.dirname(current_dir)
-    db_path = os.path.join(backend_dir, "database", "lms.db")
-    
-    print(f"Looking for database at: {db_path}")
-    print(f"Database exists: {os.path.exists(db_path)}")
-    
-    # Check if database exists
-    if not os.path.exists(db_path):
-        print(f"❌ ERROR: Database not found at {db_path}")
-        print("Please ensure you have run init_db.py in the database folder")
-        print("Run: cd backend/database && python init_db.py")
-        return
-    
-    print("✅ Database found!")
-    
-    try:
-        # Connect to the correct database
-        db = sqlite3.connect(db_path)
-        print("✅ Database connected successfully!")
-        
-        # Verify data exists
-        cursor = db.cursor()
-        
-        cursor.execute("SELECT COUNT(*) FROM courses")
-        course_count = cursor.fetchone()[0]
-        print(f"📚 Found {course_count} courses in database")
-        
-        if course_count == 0:
-            print("⚠️  WARNING: No courses found!")
-            print("Please add courses to the database")
-        
-        cursor.execute("SELECT course_name FROM courses")
-        courses = cursor.fetchall()
-        print(f"📋 Course list: {[c[0] for c in courses]}")
-        
-        cursor.execute("SELECT student_id, name, registration_no FROM students")
-        students = cursor.fetchall()
-        print(f"👨‍🎓 Found {len(students)} students: {students}")
-        
-        if not students:
-            print("❌ ERROR: No students found in database!")
-            print("Please add students to the database")
-            db.close()
-            return
-        
-        # Use the first student or a specific one
-        student_id = students[1][0]  # First student in the list
-        student_name = students[1][1]
-        student_reg = students[1][2]
-        print(f"👤 Using student_id: {student_id} - Name: {student_name} - Reg: {student_reg}")
-        
-        # Check if this student has data for Calculus
-        cursor.execute("""
-            SELECT course_id FROM courses WHERE course_name = 'Calculus'
-        """)
-        calc_course = cursor.fetchone()
-        
-        if calc_course:
-            course_id = calc_course[0]
-            cursor.execute("""
-                SELECT COUNT(*) FROM quizzes 
-                WHERE student_id = ? AND course_id = ?
-            """, (student_id, course_id))
-            quiz_count = cursor.fetchone()[0]
-            print(f"📊 Student has {quiz_count} quiz records for Calculus")
-        
-        print("\n" + "="*50)
-        print("🤖 INITIALIZING AGENT...")
-        print("="*50 + "\n")
-        
-        # Build and run the agent
-        triage_agent = build_agents(student_id, db)
-        
-        result = await Runner.run(
-            starting_agent=triage_agent,
-            input="Show quiz 1 marks in Calculus",
-            run_config=config,
-            session = memory
-        )
-        
-        print("\n" + "="*50)
-        print("🤖 AGENT RESPONSE:")
-        print("="*50)
-        print(result.final_output)
-        
-        db.close()
-        print("\n✅ Script completed successfully!")
-        
-    except Exception as e:
-        print(f"❌ UNEXPECTED ERROR: {e}")
-        import traceback
-        traceback.print_exc()
-        
-
-       
-if __name__ == "__main__":
-    asyncio.run(main())
