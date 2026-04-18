@@ -5,7 +5,8 @@ import pandas as pd
 import sys
 import os
 import asyncio
-
+import datetime
+import time
 
 # --------------------------------------------------
 # ADD PARENT DIRECTORY TO PYTHON PATH (for agents)
@@ -358,6 +359,23 @@ with st.sidebar:
     st.markdown("# 🎓 Academic Portal")
     st.markdown(f"**Welcome, {student_name.split()[0]}!**")
     st.markdown(f"*{registration_no}*")
+    st.markdown("---")
+    
+    # Live Clock Display - Updates on every page interaction
+    current_time = datetime.datetime.now()
+    time_str = current_time.strftime("%H:%M:%S")
+    date_str = current_time.strftime("%A, %B %d, %Y")
+        # Add a small refresh button for the clock
+    if st.button("🔄 Refresh Time", key="refresh_clock", use_container_width=True):
+        st.rerun()
+    st.markdown(f"""
+    <div class="clock-container">
+        <div class="clock-label">⏰ CURRENT TIME</div>
+        <div class="clock-time">{time_str}</div>
+        <div class="clock-date">{date_str}</div>
+    </div>
+    """, unsafe_allow_html=True)
+    
     st.markdown("---")
     
     page = st.radio(
