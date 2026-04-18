@@ -258,6 +258,39 @@ st.markdown("""
     .st-emotion-cache-1r4qj8v > div:empty {
         display: none;
     }
+        /* Live Clock Styling */
+    .clock-container {
+        background: rgba(255, 255, 255, 0.1);
+        padding: 0.75rem 1rem;
+        border-radius: 8px;
+        margin: 1rem 0;
+        text-align: center;
+        border: 1px solid rgba(255, 255, 255, 0.2);
+    }
+    
+    .clock-time {
+        font-size: 1.5rem;
+        font-weight: 700;
+        color: #ffffff;
+        margin: 0;
+        line-height: 1.2;
+        letter-spacing: 2px;
+    }
+    
+    .clock-date {
+        font-size: 0.85rem;
+        color: rgba(255, 255, 255, 0.8);
+        margin: 0.25rem 0 0 0;
+        font-weight: 400;
+    }
+    
+    .clock-label {
+        font-size: 0.7rem;
+        color: rgba(255, 255, 255, 0.6);
+        text-transform: uppercase;
+        letter-spacing: 1px;
+        margin-bottom: 0.25rem;
+    }
 </style>
 """, unsafe_allow_html=True)
 
