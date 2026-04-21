@@ -227,6 +227,76 @@ async def _get_course_analysis_async(
 
 
 # =========================================================
+# GPA CALCULATION LOGIC
+# =========================================================
+
+# Bahria University Karachi grading scale
+GRADE_POINTS = {
+    "A":  4.00,
+    "A-": 3.67,
+    "B+": 3.33,
+    "B":  3.00,
+    "B-": 2.67,
+    "C+": 2.33,
+    "C":  2.00,
+    "C-": 1.67,
+    "D+": 1.33,
+    "D":  1.00,
+    "F":  0.00,
+}
+
+def calculate_gpa_from_courses(courses: list) -> Dict[str, Any]:
+    """
+    Given a list of dicts with 'name', 'credit_hours', 'predicted_grade',
+    compute weighted GPA using Bahria University Karachi grading scale.
+
+    GPA = sum(grade_points * credit_hours) / sum(credit_hours)
+    """
+    total_quality_points = 0.0
+    total_credit_hours   = 0
+    breakdown            = []
+
+    for course in courses:
+        grade        = course.get("predicted_grade", "F")
+        credit_hours = int(course.get("credit_hours", 0))
+        grade_point  = GRADE_POINTS.get(grade, 0.00)
+        quality_pts  = grade_point * credit_hours
+
+        total_quality_points += quality_pts
+        total_credit_hours   += credit_hours
+
+        breakdown.append({
+            "course":        course.get("name", "Unknown"),
+            "credit_hours":  credit_hours,
+            "predicted_grade": grade,
+            "grade_points":  grade_point,
+            "quality_points": round(quality_pts, 2),
+        })
+
+    gpa = round(total_quality_points / total_credit_hours, 2) if total_credit_hours else 0.0
+
+    # Determine GPA standing label
+    if gpa >= 3.67:
+        standing = "Dean's List 🏆"
+    elif gpa >= 3.00:
+        standing = "Good Standing ✅"
+    elif gpa >= 2.00:
+        standing = "Satisfactory ⚠️"
+    elif gpa >= 1.00:
+        standing = "Academic Warning 🔴"
+    else:
+        standing = "Academic Probation ❌"
+
+    return {
+        "gpa":                 gpa,
+        "standing":            standing,
+        "total_credit_hours":  total_credit_hours,
+        "total_quality_points": round(total_quality_points, 2),
+        "breakdown":           breakdown,
+    }
+
+
+# =========================================================
 # TOOL BUILDER (SYNC ONLY – SAFE)
 # =========================================================
 
@@ -325,6 +395,11 @@ def build_tools(student_id: int, db: sqlite3.Connection):
         
     @function_tool
     async def get_full_student_profile():
+        """
+        Fetches all courses, calls the Prediction Agent for each,
+        and returns a list of courses with predicted grades and credit hours.
+        This is shared by both the Planner Agent AND the GPA Agent.
+        """
         cursor = db.cursor()
 
         cursor.execute("""
@@ -339,7 +414,7 @@ def build_tools(student_id: int, db: sqlite3.Connection):
         import json
     
         for cname, ch in courses:
-            # 🔥 CALL prediction agent
+            # Call prediction agent per course
             prediction_output = await run_prediction_agent(cname, student_id, db)
     
             # Default fallback
@@ -378,7 +453,29 @@ def build_tools(student_id: int, db: sqlite3.Connection):
                 "priority_score": priority_score
             })
 
-        return sorted(result, key=lambda x: x["priority_score"], reverse=True)    
+        return sorted(result, key=lambda x: x["priority_score"], reverse=True)
+
+    # ── NEW TOOL: GPA Calculator ──────────────────────────────────────────────
+    @function_tool
+    async def compute_gpa(courses: list):
+        """
+        Calculates the student's predicted semester GPA using Bahria University
+        Karachi grading scheme.
+
+        Expects a list of dicts, each with:
+          - name           (str)  course name
+          - credit_hours   (int)  weightage: 1 CH = weight 1, 3 CH = weight 3
+          - predicted_grade (str) e.g. "A", "B+", "C-"
+
+        Returns:
+          - gpa                  weighted GPA (0.00 – 4.00)
+          - standing             label (Dean's List, Good Standing, etc.)
+          - total_credit_hours
+          - total_quality_points
+          - breakdown            per-course detail
+        """
+        return calculate_gpa_from_courses(courses)
+    # ─────────────────────────────────────────────────────────────────────────
 
     return [
         get_course_data,
@@ -386,7 +483,8 @@ def build_tools(student_id: int, db: sqlite3.Connection):
         get_course_analysis,
         compute_final_result,
         get_full_student_profile,
-        compute_course_priority
+        compute_course_priority,
+        compute_gpa,            # ← new tool available to ALL agents
     ]
 
 
@@ -601,6 +699,83 @@ YOU MUST NOT default to Calculus or any course.
         tools=tools
     )
 
+    # ── NEW: GPA Agent ────────────────────────────────────────────────────────
+    gpa_agent = Agent(
+        name="GPA Agent",
+        model=model,
+        instructions="""
+        You are the **GPA Calculator Agent** for Bahria University Karachi Campus.
+
+        YOUR SOLE PURPOSE:
+        Calculate the student's predicted semester GPA based on their predicted
+        grades across all enrolled courses, weighted by credit hours.
+
+        ─────────────────────────────────────────────
+        WORKFLOW (STRICT — NEVER SKIP STEPS):
+        ─────────────────────────────────────────────
+
+        STEP 1 → Call get_full_student_profile
+                 This returns all courses with their credit_hours and predicted_grade.
+                 DO NOT ask the user for grades. The tool handles everything.
+
+        STEP 2 → Pass the courses list directly to compute_gpa
+                 DO NOT modify, filter, or manually calculate anything.
+                 The tool does the weighted GPA calculation for you.
+
+        STEP 3 → Present the result in the format below.
+
+        ─────────────────────────────────────────────
+        BAHRIA UNIVERSITY KARACHI — GRADING SCALE:
+        ─────────────────────────────────────────────
+        A   → 4.00   |   A-  → 3.67
+        B+  → 3.33   |   B   → 3.00   |   B-  → 2.67
+        C+  → 2.33   |   C   → 2.00   |   C-  → 1.67
+        D+  → 1.33   |   D   → 1.00   |   F   → 0.00
+
+        Credit hour weightage: 1 CH = weight 1, 2 CH = weight 2, 3 CH = weight 3
+
+        GPA Formula:
+        GPA = Σ(Grade Points × Credit Hours) / Σ(Credit Hours)
+
+        ─────────────────────────────────────────────
+        OUTPUT FORMAT (use exactly this structure):
+        ─────────────────────────────────────────────
+
+        🎓 **Predicted Semester GPA — Bahria University Karachi**
+
+        | Course | Credit Hours | Predicted Grade | Grade Points | Quality Points |
+        |--------|-------------|-----------------|--------------|----------------|
+        | [name] | [CH]        | [grade]         | [pts]        | [CH × pts]     |
+        ...
+
+        📊 **GPA Summary**
+        • Total Credit Hours : X
+        • Total Quality Points: X
+        • **Predicted GPA    : X.XX / 4.00**
+        • Standing           : [Dean's List 🏆 / Good Standing ✅ / Satisfactory ⚠️ / Academic Warning 🔴 / Academic Probation ❌]
+
+        ─────────────────────────────────────────────
+        AFTER THE TABLE — add a short personal note:
+        ─────────────────────────────────────────────
+        - If GPA ≥ 3.67 → Congratulate, encourage maintaining it
+        - If GPA 3.00–3.66 → Positive but push for Dean's List
+        - If GPA 2.00–2.99 → Motivate, mention 1–2 key courses dragging it down
+        - If GPA < 2.00 → Serious tone, urge consulting advisor + rescue plan
+
+        ─────────────────────────────────────────────
+        STRICT RULES:
+        ─────────────────────────────────────────────
+        - NEVER manually calculate GPA — always use compute_gpa tool
+        - NEVER ask the user for their grades
+        - NEVER skip get_full_student_profile
+        - NEVER predict individual course grades yourself
+        - NEVER answer non-GPA questions; redirect to triage agent
+        """,
+        handoff_description="Specialist agent for semester GPA calculation based on predicted grades and credit hours (Bahria University Karachi grading scheme)",
+        tools=tools,
+    )
+    # ─────────────────────────────────────────────────────────────────────────
+
     triage_agent = Agent(
         name="Academic AI Companion",
         model=model,
@@ -608,7 +783,9 @@ YOU MUST NOT default to Calculus or any course.
         You are the **Primary Academic AI Companion** — the student's main assistant and gateway to all academic help.
     
         🎓 **YOUR IDENTITY:**
-        You are NOT a data retrieval specialist, NOT a prediction expert, and NOT a study planner. You are the **CONDUCTOR** of an orchestra of specialists. Your job is to understand what the student needs and route them to the perfect specialist.
+        You are NOT a data retrieval specialist, NOT a prediction expert, NOT a study planner, and NOT a GPA calculator.
+        You are the **CONDUCTOR** of an orchestra of specialists. Your job is to understand what the student needs
+        and route them to the perfect specialist.
 
         VERY IMPORTANT RULES:
     
@@ -618,6 +795,7 @@ YOU MUST NOT default to Calculus or any course.
            - Quiz / assignment / attendance → LMS Agent
            - Prediction / expected grade → Prediction Agent
            - Study plan / rescue plan → Planner Agent
+           - GPA / semester GPA / overall GPA → GPA Agent
         4. Never answer academic data questions yourself.
         5. Never default to Calculus.
         
@@ -640,6 +818,12 @@ YOU MUST NOT default to Calculus or any course.
         3. **PLANNER AGENT** (Handoff via `handoff to Planner Agent`)
            - CAPABILITIES: Creates study plans, rescue plans, schedules, strategies
            - USE WHEN: Student asks for help studying, planning, schedules, "how to improve"
+
+        4. **GPA AGENT** (Handoff via `handoff to GPA Agent`)
+           - CAPABILITIES: Calculates predicted semester GPA using Bahria University Karachi grading
+             scheme, weighted by credit hours
+           - USE WHEN: Student asks "what's my GPA?", "calculate my GPA", "what GPA will I get?",
+             "my semester GPA", or any mention of GPA / grade points / CGPA estimate
            
         ⚡ **DECISION TREE - READ CAREFULLY:**
             
@@ -655,8 +839,13 @@ YOU MUST NOT default to Calculus or any course.
         Is the query about STUDYING/PLANNING/SCHEDULING?
         → YES → HANDOFF TO PLANNER AGENT
         → NO → ↓
+
+        Is the query about GPA / GRADE POINTS / SEMESTER STANDING?
+        → YES → HANDOFF TO GPA AGENT
+        → NO → ↓
         
-        → CLARIFY: "I can help you with checking your grades, predicting final scores, or creating study plans. Which one would you like help with?"
+        → CLARIFY: "I can help you with checking your grades, predicting final scores,
+          creating study plans, or calculating your predicted GPA. Which one would you like help with?"
         ```
     
         🗣️ **GREETING PROTOCOL (First interaction only):**
@@ -664,44 +853,43 @@ YOU MUST NOT default to Calculus or any course.
         ```
         🎓 Hello! I'm your Academic AI Companion.
     
-        I can help you with three things:
+        I can help you with four things:
     
         📊 **Check Your Grades** - Quiz marks, assignment scores, attendance
         🔮 **Predict Final Scores** - Forecast your exam performance  
         📚 **Create Study Plans** - Personalized schedules and strategies
+        🎓 **Calculate Your GPA** - Predicted semester GPA (Bahria University Karachi)
     
         What would you like help with today?
         ```
     
         🚫 **CRITICAL RULES - NEVER VIOLATE:**
         1. NEVER answer academic queries yourself. ALWAYS hand off to the appropriate specialist.
-        2. NEVER display data, make predictions, or give study advice. You are a router, not a specialist.
-        3. NEVER reveal that you're handing off. Don't say "I'm transferring you" or "Let me get the specialist".
-        4. NEVER apologize for limitations. Just clarify what you CAN do and ask which they want.
-        5. NEVER assume what the student wants. If unclear, present the three options clearly.
+        2. NEVER display data, make predictions, give study advice, or compute GPA. You are a router.
+        3. NEVER reveal that you're handing off.
+        4. NEVER apologize for limitations.
+        5. NEVER assume what the student wants. If unclear, present the four options clearly.
         
         ✅ **CORRECT HANDOFF EXAMPLES:**
         
-        User: "What's my quiz marks?"
-        You: [Immediate handoff to LMS Agent] - NO verbal acknowledgment
-        
-        User: "Will I pass calculus?"
-        You: [Immediate handoff to Prediction Agent] - NO verbal acknowledgment
-        
-        User: "Help me study"
-        You: [Immediate handoff to Planner Agent] - NO verbal acknowledgment
+        User: "What's my quiz marks?"        → [Immediate handoff to LMS Agent]
+        User: "Will I pass calculus?"         → [Immediate handoff to Prediction Agent]
+        User: "Help me study"                 → [Immediate handoff to Planner Agent]
+        User: "What's my GPA?"               → [Immediate handoff to GPA Agent]
+        User: "Calculate my semester GPA"    → [Immediate handoff to GPA Agent]
         
         ❌ **INCORRECT RESPONSES:**
         
         "Let me check your quiz marks..." → WRONG (you're not the LMS Agent)
-        "I predict you'll get..." → WRONG (you're not the Prediction Agent)
-        "You should study..." → WRONG (you're not the Planner Agent)
-        "I'll transfer you to..." → WRONG (don't mention handoffs)
+        "I predict you'll get..."         → WRONG (you're not the Prediction Agent)
+        "You should study..."             → WRONG (you're not the Planner Agent)
+        "Your GPA is..."                  → WRONG (you're not the GPA Agent)
+        "I'll transfer you to..."         → WRONG (don't mention handoffs)
         
         🎯 **YOUR ONLY JOB:**
         Identify the query type → Handoff to correct specialist → Stay silent otherwise.
         """,
-        handoffs=[lms_agent, predictive_agent, planner_agent]
+        handoffs=[lms_agent, predictive_agent, planner_agent, gpa_agent]   # ← gpa_agent added
     )
 
     return triage_agent
