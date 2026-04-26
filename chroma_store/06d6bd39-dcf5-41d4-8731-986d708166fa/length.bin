@@ -1,0 +1,18 @@
+Let's see if this works for our sentiment example
+The loss when model was right (if true y=1) 
+Is lower than the loss when model was wrong (if true y=0):
+Sure enough, loss was bigger when model was wrong!
+LCE(ˆy,y) =
+−[ylogs(w·x+b)+(1−y)log(1−s(w·x+b))]
+=
+−[log(1−s(w·x+b))]
+=
+−log(.30)
+=
+1.2
+LCE(ˆy,y) =
+−[ylogs(w·x+b)+(1−y)log(1−s(w·x+b))]
+=
+−[logs(w·x+b)]
+=
+−log(.70)

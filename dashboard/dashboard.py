@@ -311,6 +311,18 @@ DB_PATH = os.path.join(PROJECT_ROOT, "backend", "database", "lms.db")
 # --------------------------------------------------
 student_id = st.query_params.get("student_id")
 
+# ── Clear cache when a new student session starts ────────────────────────
+from backend.agentic_architecture.agent import clear_prediction_cache, clear_notes_store
+
+if student_id and st.session_state.get("current_student_id") != student_id:
+    clear_prediction_cache()
+    clear_notes_store()
+    st.session_state.current_student_id = student_id
+    st.session_state.messages = []
+    st.session_state.welcome_shown = False
+    st.session_state.notes_filename = ""
+# ─────────────────────────────────────────────────────────────────────────
+
 if not student_id:
     st.error("🔒 Unauthorized Access")
     st.warning("Please login through the authentication portal to access your dashboard.")
@@ -777,13 +789,78 @@ elif page == "📅 Attendance":
                 st.info("No attendance data available for this course.")
             
             st.markdown("---")
-            
 # ==================================================
 # PAGE: AI ASSISTANT (CHATBOT)
 # ==================================================
 elif page == "🤖 AI Assistant":
+
     st.title("🤖 EduGuide-Academic AI Assistant")
     st.caption("Your intelligent companion for academic queries, predictions, and study planning.")
+
+    # ----------------------------------
+    # Import notes functions from agent.py
+    # ----------------------------------
+    from backend.agentic_architecture.agent import (
+        extract_pages_from_file,
+        load_notes_file,
+        clear_notes_store,
+        notes_file_loaded,
+        get_notes_summary,
+    )
+
+    # ----------------------------------
+    # Sidebar: File Upload for Notes Agent
+    # ----------------------------------
+    with st.sidebar:
+        st.markdown("---")
+        st.markdown("### 📖 Upload Lecture Notes")
+        st.caption("Upload any file and ask me to explain it.")
+
+        uploaded_file = st.file_uploader(
+            "Choose a file",
+            type=["pdf", "pptx", "docx", "png", "jpg", "jpeg", "webp"],
+            key="notes_uploader",
+            help="Supported: PDF, PowerPoint (.pptx), Word (.docx), Images"
+        )
+
+        if uploaded_file is not None:
+            # Only re-process if a NEW file is uploaded
+            if st.session_state.get("notes_filename") != uploaded_file.name:
+                with st.spinner(f"Reading '{uploaded_file.name}'..."):
+                    try:
+                        import tempfile
+                        import os
+
+                        suffix = os.path.splitext(uploaded_file.name)[1]
+
+                        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+                            tmp.write(uploaded_file.read())
+                            tmp_path = tmp.name
+
+                        pages = extract_pages_from_file(tmp_path)
+                        os.unlink(tmp_path)
+
+                        load_notes_file(pages, uploaded_file.name)
+                        st.session_state.notes_filename = uploaded_file.name
+
+                        st.success(
+                            f"✅ **{uploaded_file.name}**\n\n"
+                            f"{len(pages)} "
+                            f"{'slide' if uploaded_file.name.endswith('.pptx') else 'page'}(s) loaded. "
+                            f"Now ask me anything about it!"
+                        )
+
+                    except Exception as e:
+                        st.error(f"Could not read file: {e}")
+
+        # Show currently loaded file
+        if notes_file_loaded():
+            st.info(f"📄 **Loaded:** {get_notes_summary()}")
+
+            if st.button("🗑️ Remove File", use_container_width=True):
+                clear_notes_store()
+                st.session_state.notes_filename = ""
+                st.rerun()
 
     # ----------------------------------
     # Initialize session state
@@ -798,12 +875,18 @@ elif page == "🤖 AI Assistant":
             "🔍 **Information Retrieval** - Query your LMS data instantly\n\n"
             "📈 **Grade Predictions** - Forecast your final exam performance\n\n"
             "📝 **Study Plans** - Get personalized rescue and study strategies\n\n"
+            "🎓 **GPA Calculator** - Predict your semester GPA\n\n"
+            "📖 **Notes Assistant** - Upload any lecture file and ask me to explain it\n\n"
             "💡 **Academic Insights** - Receive tailored recommendations\n\n"
-            "Feel free to ask me anything about your courses, grades, or study strategies!"
+            "Feel free to ask me anything about your courses, grades, or study strategies!\n\n"
+            "_💡 Tip: Upload a lecture file from the sidebar to get started with Notes Assistant._"
         )
-        st.session_state.messages.append(
-            {"role": "assistant", "content": welcome_msg}
-        )
+
+        st.session_state.messages.append({
+            "role": "assistant",
+            "content": welcome_msg
+        })
+
         st.session_state.welcome_shown = True
 
     # ----------------------------------
@@ -816,13 +899,20 @@ elif page == "🤖 AI Assistant":
     # ----------------------------------
     # User input
     # ----------------------------------
-    prompt = st.chat_input("Type your question here...")
+    if notes_file_loaded():
+        chat_placeholder = "Ask about your notes, grades, predictions... e.g. 'Explain slide 3'"
+    else:
+        chat_placeholder = "Ask about your grades, predictions, study plans..."
+
+    prompt = st.chat_input(chat_placeholder)
 
     if prompt:
         # Show user message
-        st.session_state.messages.append(
-            {"role": "user", "content": prompt}
-        )
+        st.session_state.messages.append({
+            "role": "user",
+            "content": prompt
+        })
+
         with st.chat_message("user"):
             st.markdown(prompt)
 
@@ -830,13 +920,9 @@ elif page == "🤖 AI Assistant":
         # AI response using OpenAI Agent SDK
         # ----------------------------------
         try:
-            # Import the agent runner function
-            from backend.agentic_architecture import run_agent_query
-            
             with st.spinner("🤔 Analyzing with AI Agents..."):
-                # Use the new agent system - Note: using asyncio.run() to handle async
                 import asyncio
-                # Build triage agent using new merged agent.py
+
                 triage_agent = build_agents(student_id, conn)
 
                 result = asyncio.run(
@@ -850,42 +936,47 @@ elif page == "🤖 AI Assistant":
 
                 bot_reply = result.final_output
 
-
         except ImportError as e:
-            # Fallback if agent system is not available
             st.error(f"Agent system not available: {str(e)}")
+
             bot_reply = (
-                f"⚠️ **Agent System Error**\n\n"
-                f"The AI agent system is currently unavailable. Please try again later.\n\n"
+                "⚠️ **Agent System Error**\n\n"
+                "The AI agent system is currently unavailable. Please try again later.\n\n"
                 f"Error: `{str(e)}`"
             )
-            
+
         except Exception as e:
-            # General error handling
             import traceback
+
             error_details = traceback.format_exc()
             print(f"Agent Error in Dashboard: {str(e)}")
             print(error_details)
-            
+
             bot_reply = (
-                f"⚠️ **System Error**\n\n"
+                "⚠️ **System Error**\n\n"
                 f"I encountered an issue while processing your request: `{str(e)}`\n\n"
                 f"Hi {student_name}! 👋 Please try:\n"
-                f"1. Rephrasing your question\n"
-                f"2. Specifying the course name clearly\n"
-                f"3. Asking about a different aspect\n\n"
-                f"Examples:\n"
-                f"• \"What are my quiz marks in Calculus?\"\n"
-                f"• \"Predict my final score in Physics\"\n"
-                f"• \"Create a study plan for Programming\""
+                "1. Rephrasing your question\n"
+                "2. Specifying the course name clearly\n"
+                "3. Asking about a different aspect\n\n"
+                "Examples:\n"
+                "• \"What are my quiz marks in Calculus?\"\n"
+                "• \"Predict my final score in Physics\"\n"
+                "• \"Create a study plan for Programming\"\n"
+                "• \"Explain slide 3 of my uploaded notes\""
             )
 
+        # ----------------------------------
         # Store and display assistant reply
-        st.session_state.messages.append(
-            {"role": "assistant", "content": bot_reply}
-        )
+        # ----------------------------------
+        st.session_state.messages.append({
+            "role": "assistant",
+            "content": bot_reply
+        })
+
         with st.chat_message("assistant"):
             st.markdown(bot_reply)
+            
 # --------------------------------------------------
 # CLOSE DB
 # --------------------------------------------------
