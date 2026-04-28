@@ -789,10 +789,74 @@ elif page == "📅 Attendance":
                 st.info("No attendance data available for this course.")
             
             st.markdown("---")
-# ==================================================
+
+            # ==================================================
 # PAGE: AI ASSISTANT (CHATBOT)
 # ==================================================
 elif page == "🤖 AI Assistant":
+
+    # --------------------------------------------------
+    # CSS — ONLY targets the sidebar upload widget.
+    # The main chat area is left completely untouched.
+    # --------------------------------------------------
+    st.markdown("""
+    <style>
+        /* ── File uploader box: visible on dark-blue sidebar ── */
+        section[data-testid="stSidebar"] [data-testid="stFileUploader"] {
+            background: rgba(255, 255, 255, 0.12) !important;
+            border: 1.5px dashed rgba(255, 255, 255, 0.45) !important;
+            border-radius: 10px !important;
+            padding: 6px !important;
+        }
+
+        /* ── All text inside the uploader ── */
+        section[data-testid="stSidebar"] [data-testid="stFileUploader"] label,
+        section[data-testid="stSidebar"] [data-testid="stFileUploader"] span,
+        section[data-testid="stSidebar"] [data-testid="stFileUploader"] p,
+        section[data-testid="stSidebar"] [data-testid="stFileUploader"] small,
+        section[data-testid="stSidebar"] [data-testid="stFileUploader"] div {
+            color: #ffffff !important;
+            opacity: 1 !important;
+        }
+
+        /* ── "Browse files" / "Upload" button ── */
+        section[data-testid="stSidebar"] [data-testid="stFileUploader"] button {
+            background: rgba(255, 255, 255, 0.20) !important;
+            color: #ffffff !important;
+            border: 1px solid rgba(255, 255, 255, 0.40) !important;
+            border-radius: 7px !important;
+            font-weight: 600 !important;
+        }
+        section[data-testid="stSidebar"] [data-testid="stFileUploader"] button:hover {
+            background: rgba(255, 255, 255, 0.32) !important;
+        }
+
+        /* ── st.info / st.success / st.error in sidebar ── */
+        section[data-testid="stSidebar"] [data-testid="stAlert"] {
+            background: rgba(255, 255, 255, 0.12) !important;
+            border: 1px solid rgba(255, 255, 255, 0.25) !important;
+            border-radius: 9px !important;
+        }
+        section[data-testid="stSidebar"] [data-testid="stAlert"] p,
+        section[data-testid="stSidebar"] [data-testid="stAlert"] span,
+        section[data-testid="stSidebar"] [data-testid="stAlert"] div {
+            color: #ffffff !important;
+        }
+
+        /* ── "Remove File" button in sidebar ── */
+        section[data-testid="stSidebar"] .stButton > button {
+            background: rgba(239, 68, 68, 0.18) !important;
+            border: 1.5px solid rgba(239, 68, 68, 0.50) !important;
+            color: #fca5a5 !important;
+            border-radius: 8px !important;
+            font-weight: 600 !important;
+        }
+        section[data-testid="stSidebar"] .stButton > button:hover {
+            background: rgba(239, 68, 68, 0.35) !important;
+            color: #ffffff !important;
+        }
+    </style>
+    """, unsafe_allow_html=True)
 
     st.title("🤖 EduGuide-Academic AI Assistant")
     st.caption("Your intelligent companion for academic queries, predictions, and study planning.")
@@ -817,10 +881,9 @@ elif page == "🤖 AI Assistant":
         st.caption("Upload any file and ask me to explain it.")
 
         uploaded_file = st.file_uploader(
-            "Choose a file",
+            "Supported: PDF, PowerPoint (.pptx), Word (.docx), Images",
             type=["pdf", "pptx", "docx", "png", "jpg", "jpeg", "webp"],
             key="notes_uploader",
-            help="Supported: PDF, PowerPoint (.pptx), Word (.docx), Images"
         )
 
         if uploaded_file is not None:
@@ -864,11 +927,10 @@ elif page == "🤖 AI Assistant":
 
     # ----------------------------------
     # Initialize session state
+    # FIX: initialise messages AND welcome together in one block
+    # so the welcome message is always present on first load.
     # ----------------------------------
     if "messages" not in st.session_state:
-        st.session_state.messages = []
-
-    if "welcome_shown" not in st.session_state:
         welcome_msg = (
             f"👋 **Hello {student_name.split()[0]}!** I'm your Academic AI Companion.\n\n"
             "I'm here to assist you with:\n\n"
@@ -881,13 +943,7 @@ elif page == "🤖 AI Assistant":
             "Feel free to ask me anything about your courses, grades, or study strategies!\n\n"
             "_💡 Tip: Upload a lecture file from the sidebar to get started with Notes Assistant._"
         )
-
-        st.session_state.messages.append({
-            "role": "assistant",
-            "content": welcome_msg
-        })
-
-        st.session_state.welcome_shown = True
+        st.session_state.messages = [{"role": "assistant", "content": welcome_msg}]
 
     # ----------------------------------
     # Display chat history
@@ -907,11 +963,7 @@ elif page == "🤖 AI Assistant":
     prompt = st.chat_input(chat_placeholder)
 
     if prompt:
-        # Show user message
-        st.session_state.messages.append({
-            "role": "user",
-            "content": prompt
-        })
+        st.session_state.messages.append({"role": "user", "content": prompt})
 
         with st.chat_message("user"):
             st.markdown(prompt)
@@ -930,15 +982,13 @@ elif page == "🤖 AI Assistant":
                         starting_agent=triage_agent,
                         input=prompt,
                         run_config=config,
-                        session=memory
+                        session=memory,
                     )
                 )
 
                 bot_reply = result.final_output
 
         except ImportError as e:
-            st.error(f"Agent system not available: {str(e)}")
-
             bot_reply = (
                 "⚠️ **Agent System Error**\n\n"
                 "The AI agent system is currently unavailable. Please try again later.\n\n"
@@ -966,16 +1016,11 @@ elif page == "🤖 AI Assistant":
                 "• \"Explain slide 3 of my uploaded notes\""
             )
 
-        # ----------------------------------
-        # Store and display assistant reply
-        # ----------------------------------
-        st.session_state.messages.append({
-            "role": "assistant",
-            "content": bot_reply
-        })
+        st.session_state.messages.append({"role": "assistant", "content": bot_reply})
 
         with st.chat_message("assistant"):
             st.markdown(bot_reply)
+            
             
 # --------------------------------------------------
 # CLOSE DB
