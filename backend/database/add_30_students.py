@@ -70,7 +70,7 @@ print(f"\n👥 Generating 30 students...")
 students_to_add = []
 for i, name in enumerate(muslim_names[:30], start=1):
     registration_no = f"2024-CS-{i:03d}"
-    semester = 3  # Same semester for all
+    semester = 4  # Same semester for all
     department = "CS"
     password_hash = bcrypt.hashpw("1234".encode(), bcrypt.gensalt())
     performance = performance_distribution[i-1]
@@ -95,7 +95,7 @@ for student in students_to_add:
 print(f"✅ Added {len(students_to_add)} students")
 
 # Get all student IDs
-cur.execute("SELECT student_id, registration_no FROM students WHERE semester = 3 AND department = 'CS'")
+cur.execute("SELECT student_id, registration_no FROM students WHERE semester = 4 AND department = 'CS'")
 all_students = cur.fetchall()
 print(f"✅ Retrieved {len(all_students)} student records")
 
@@ -157,7 +157,7 @@ print("📊 DATA ADDITION SUMMARY")
 print("="*60)
 
 # Count students
-cur.execute("SELECT COUNT(*) FROM students WHERE semester = 3 AND department = 'CS'")
+cur.execute("SELECT COUNT(*) FROM students WHERE semester = 4 AND department = 'CS'")
 student_count = cur.fetchone()[0]
 print(f"\n👥 Total Students Added: {student_count}")
 
@@ -190,7 +190,7 @@ cur.execute("""
            (SELECT SUM(marks_obtained) FROM assignments WHERE student_id = s.student_id AND course_id = 1) as assign_total,
            (SELECT midterm FROM marks WHERE student_id = s.student_id AND course_id = 1) as midterm
     FROM students s
-    WHERE s.semester = 3 AND s.department = 'CS'
+    WHERE s.semester = 4 AND s.department = 'CS'
     LIMIT 5
 """)
 

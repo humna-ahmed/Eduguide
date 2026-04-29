@@ -81,7 +81,17 @@ CREATE TABLE IF NOT EXISTS attendance (
     FOREIGN KEY(course_id) REFERENCES courses(course_id)
 )
 """)
-
+# Sessions table
+cur.execute("""
+CREATE TABLE IF NOT EXISTS sessions (
+    session_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    student_id INTEGER NOT NULL,
+    session_token TEXT NOT NULL UNIQUE,
+    expires_at TIMESTAMP NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY(student_id) REFERENCES students(student_id)
+)
+""")
 conn.commit()
 conn.close()
 print("Database initialized with credit_hours at:", DB_PATH)
