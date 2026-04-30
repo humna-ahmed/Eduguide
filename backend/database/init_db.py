@@ -92,6 +92,22 @@ CREATE TABLE IF NOT EXISTS sessions (
     FOREIGN KEY(student_id) REFERENCES students(student_id)
 )
 """)
+# Lectures table - stores lecture file metadata
+cur.execute("""
+CREATE TABLE IF NOT EXISTS lectures (
+    lecture_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    course_id INTEGER NOT NULL,
+    lecture_number INTEGER NOT NULL,
+    lecture_title TEXT NOT NULL,
+    file_name TEXT NOT NULL,
+    file_data BLOB NOT NULL,
+    file_type TEXT NOT NULL,
+    file_size INTEGER,
+    uploaded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY(course_id) REFERENCES courses(course_id),
+    UNIQUE(course_id, lecture_number)
+)
+""")
 conn.commit()
 conn.close()
 print("Database initialized with credit_hours at:", DB_PATH)
