@@ -316,77 +316,96 @@ async def _fetch_single_course_prediction(course_name: str, student_id: int, db:
     _prediction_cache[cache_key] = result
     return result
 
+import json
 
-def _generate_study_plan(courses: List[Dict[str, Any]]) -> str:
-    """
-    Generates a full markdown study plan from a list of course dicts
-    (output of _fetch_full_student_profile).
-    """
-    DAILY_HOURS = {
-        "F": 5.0, "D": 4.5, "D+": 4.0, "C-": 3.5, "C": 3.0,
-        "C+": 2.8, "B-": 2.5, "B": 2.2, "B+": 2.0, "A-": 1.5, "A": 1.0,
-    }
-    CH_MULT = {1: 0.7, 2: 1.0, 3: 1.3}
+_user_preferences = {}
+_last_weak_topics = None
 
-    sorted_courses = sorted(
-        courses,
-        key=lambda c: c["credit_hours"] * (4.0 - GRADE_POINTS.get(c["predicted_grade"], 0)),
-        reverse=True,
-    )
 
-    lines = ["# 📚 Your Personalized Study Plan\n",
-             "## 🎯 Priority Order (Most Urgent → Least Urgent)\n"]
-    for i, c in enumerate(sorted_courses, 1):
-        g   = c["predicted_grade"]
-        gap = round(4.0 - GRADE_POINTS.get(g, 0), 2)
-        lines.append(f"{i}. **{c['name']}** ({c['credit_hours']} CH) — Predicted: {g} | GPA Gap to A: {gap}")
+def save_preferences(pref_string: str):
+    parts = pref_string.split(",")
 
-    lines += ["\n---\n", "## 📅 Daily Study Hours Allocation\n",
-              "| Course | Credit Hours | Predicted Grade | Daily Hours Needed |",
-              "|--------|-------------|-----------------|-------------------|"]
-    for c in sorted_courses:
-        g   = c["predicted_grade"]
-        hrs = round(DAILY_HOURS.get(g, 2.5) * CH_MULT.get(c["credit_hours"], 1.0), 1)
-        lines.append(f"| {c['name']} | {c['credit_hours']} CH | {g} | {hrs} hrs/day |")
+    for part in parts:
+        key, value = part.strip().split("=")
+        key = key.strip()
+        value = value.strip()
 
-    lines += ["\n---\n", "## 🧠 Course-Specific Strategy\n"]
-    for c in sorted_courses:
-        g          = c["predicted_grade"]
-        gp         = GRADE_POINTS.get(g, 0)
-        pct        = c.get("percentage", 0)
-        mid        = c.get("midterm", 0)
-        quiz       = c.get("quiz_total", 0)
-        assgn      = c.get("assignment_total", 0)
-        pred_final = c.get("predicted_final", 0)
-        weakest    = min(
-            {f"Quizzes ({quiz}/10)": quiz / 10, f"Assignments ({assgn}/20)": assgn / 20, f"Midterm ({mid}/20)": mid / 20},
-            key=lambda k: {f"Quizzes ({quiz}/10)": quiz / 10, f"Assignments ({assgn}/20)": assgn / 20, f"Midterm ({mid}/20)": mid / 20}[k],
-        )
-        lines.append(f"### 📌 {c['name']} — Grade: {g} → Target: A")
-        lines.append(f"- **Sessional**: Quiz {quiz}/10 | Assignment {assgn}/20 | Midterm {mid}/20")
-        lines.append(f"- **Predicted Final Exam**: {pred_final}/50")
-        lines.append(f"- **Predicted Total**: {pct}%")
-        lines.append(f"- **Weakest Area**: {weakest} ← prioritise this")
-        if gp < 2.0:
-            lines.append("- **⚠️ Action**: Critical — revisit fundamentals from week 1. Attempt every past paper.")
-        elif gp < 3.0:
-            lines.append("- **Action**: Consistent daily practice needed. Solve past papers under timed conditions.")
-        elif gp < 3.67:
-            lines.append("- **Action**: Small gap to A. Focus on your weakest area and do 2 full mock papers.")
-        else:
-            lines.append("- **Action**: Very close to A. One focused revision of weak topics will push you over.")
-        yt_query = (
-            f"{c['name']} basics for beginners"     if gp < 2.0 else
-            f"{c['name']} problem solving tutorial" if gp < 3.0 else
-            f"{c['name']} advanced exam tips"       if gp < 3.67 else
-            f"{c['name']} exam preparation tutorial"
-        )
-        yt_url = "https://www.youtube.com/results?search_query=" + yt_query.replace(" ", "+")
-        lines.append(f"- 📺 **YouTube**: [{yt_query}]({yt_url})\n")
+        if key == "hours":
+            _user_preferences["hours_per_day"] = int(value)
+        elif key == "days":
+            _user_preferences["days"] = int(value)
+        elif key == "style":
+            _user_preferences["study_style"] = value.lower()
 
-    lines.append("---")
-    lines.append("\n💬 **Tell me which specific topic you are struggling with** and I will give you a targeted YouTube link for that exact topic.")
-    return "\n".join(lines)
+
+def parse_weak_topics(input_str: str):
+    global _last_weak_topics
+
+    result = {}
+    parts = input_str.split("|")
+
+    for part in parts:
+        course, topics = part.split(":")
+        topic_list = topics.split(",")
+        result[course.strip()] = [t.strip() for t in topic_list]
+
+    _last_weak_topics = result
+    return "✅ Weak topics saved."
+
+
+def get_event_slots(hours_per_day):
+    slots = [
+        "After Breakfast",
+        "Before Lunch",
+        "After Dhuhr",
+        "After Asr",
+        "After Maghrib",
+        "After Isha"
+    ]
+    return slots[:hours_per_day]
+
+
+def generate_event_plan():
+    global _last_weak_topics
+
+    if not _user_preferences or not _last_weak_topics:
+        return "⚠️ Missing preferences or weak topics."
+
+    hours = _user_preferences["hours_per_day"]
+    days = _user_preferences["days"]
+    style = _user_preferences["study_style"]
+
+    slots = get_event_slots(hours)
+
+    topic_list = [(c, t) for c, topics in _last_weak_topics.items() for t in topics]
+
+    idx = 0
+    plan = []
+
+    for d in range(days):
+        day_plan = [f"\n📅 Day {d+1}"]
+
+        for slot in slots:
+            if idx >= len(topic_list):
+                idx = 0
+
+            course, topic = topic_list[idx]
+
+            if style == "concept":
+                task = f"Study concepts of {topic}"
+            elif style == "practice":
+                task = f"Practice questions of {topic}"
+            else:
+                task = f"Concept + Practice for {topic}"
+
+            day_plan.append(f"{slot} → {course}: {task}")
+            idx += 1
+
+        day_plan.append("After Isha → Revision")
+
+        plan.append("\n".join(day_plan))
+
+    return "\n".join(plan)
 
 # =========================================================
 # NOTES AGENT — PAGE DATACLASS & FILE EXTRACTION
@@ -741,14 +760,25 @@ def build_tools(student_id: int, db: sqlite3.Connection):
     # ── Planning & GPA tools ──────────────────────────────────────────────────
 
     @function_tool
-    async def get_study_plan() -> str:
-        """
-        Generates a full personalized study plan for all courses.
-        Internally fetches the student profile and builds the plan.
-        """
-        profile = await _fetch_full_student_profile(student_id, db)
-        return _generate_study_plan(profile["courses"])
+    def ask_study_preferences():
+        return """
+    Provide:
+    hours=3, days=5, style=mixed
+    """
 
+    @function_tool
+    def save_user_preferences(input_text: str):
+        save_preferences(input_text)
+        return "✅ Preferences saved."
+
+    @function_tool
+    def save_weak_topics(input_text: str):
+        return parse_weak_topics(input_text)
+
+    @function_tool
+    def create_study_plan():
+        return generate_event_plan()
+    
     @function_tool
     async def get_semester_gpa() -> Dict[str, Any]:
         """
@@ -793,7 +823,7 @@ def build_tools(student_id: int, db: sqlite3.Connection):
     return {
         "lms":        [get_course_data],
         "prediction": [predict_single_course, predict_all_courses],
-        "planner":    [get_study_plan],
+        "planner":    [ask_study_preferences, save_user_preferences, save_weak_topics, create_study_plan],
         "gpa":        [get_semester_gpa],
         "notes":      [ask_notes, summarize_notes, get_exam_topics, check_notes_status],
     }
@@ -936,33 +966,32 @@ YOU MUST NOT default to Calculus or any course.
         name="Planner Agent",
         model=planner_ft_model,
         instructions="""
-        You are the Academic Planning Agent.
+        You are an intelligent study planner.
 
-        ═══════════════════════════════════════════════
-        WORKFLOW — FOLLOW EXACTLY, NO EXCEPTIONS
-        ═══════════════════════════════════════════════
+        Follow this EXACT flow:
 
-        STEP 1 → Call get_study_plan
-                 This tool fetches all courses with exact marks and generates
-                 the complete plan — priority order, daily hours, strategies,
-                 timetable, YouTube tips.
-                 DO NOT ask the student for any information.
+        1. When user asks for a study plan:
+           - Show predicted grades
+           - Show course topics
 
-        STEP 2 → Present the output of get_study_plan EXACTLY as returned.
-                 DO NOT write your own plan. DO NOT modify the tool output.
+        2. Ask user to select weak topics
+           → Then call: save_weak_topics
 
-        STEP 3 → Add only a single short sentence at the end offering help
-                 with specific weak topics.
+        3. Ask for:
+           - hours
+           - days
+           - study style
+           → Then call: save_user_preferences
 
-        ═══════════════════════════════════════════════
-        STRICT RULES:
-        ═══════════════════════════════════════════════
-        - NEVER write a study plan yourself — always use get_study_plan tool
-        - NEVER ask the student for grades or marks
-        - NEVER modify numbers from tool output
-        - NEVER produce generic advice like "review lecture notes" or "group study"
+        4. Finally:
+           → Call: create_study_plan
+
+        IMPORTANT:
+        - Do NOT generate plan yourself
+        - ALWAYS use tools
+        - Ask clearly step-by-step
         """,
-        handoff_description="Specialist agent for study planning, scheduling, and rescue plans",
+        handoff_description="Specialist agent for personalised event-based study planning using course outlines and weak topics",
         tools=tools["planner"],
     )
 

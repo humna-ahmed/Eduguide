@@ -18,7 +18,7 @@ courses_data = [
     ("Operating Systems", 3),
     ("Database Management Systems", 3),
     ("Software Design and Architecture", 3),
-    ("Design Analysis of Algorithms", 2),
+    ("Design and Analysis of Algorithms", 2),
     ("Engineering Management", 1)
 ]
 
