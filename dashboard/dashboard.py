@@ -292,6 +292,21 @@ st.markdown("""
         letter-spacing: 1px;
         margin-bottom: 0.25rem;
     }
+    /* Course Outline Styling */
+.course-outline-topic {
+    background: white;
+    padding: 0.75rem 1rem;
+    border-radius: 8px;
+    margin-bottom: 0.5rem;
+    border-left: 3px solid #3b82f6;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+}
+
+.course-outline-topic:hover {
+    background: #f8fafc;
+    transform: translateX(5px);
+    transition: all 0.2s ease;
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -394,6 +409,7 @@ with st.sidebar:
         "Navigation",
         [
             "🏠 Dashboard",
+            "📋 Course Outline",  # Added new page
             "👤 Personal Info",
             "📝 Quizzes",
             "📂 Assignments",
@@ -536,6 +552,88 @@ if page == "🏠 Dashboard":
             
             # Create a bar chart for current assessments only
             st.bar_chart(chart_df.set_index("Assessment")[["Score", "Max"]], use_container_width=True)
+            
+            st.markdown("---")
+# ==================================================
+# PAGE: COURSE OUTLINE
+# ==================================================
+elif page == "📋 Course Outline":
+    st.title("📋 Course Outlines")
+    
+    selected_courses = course_selector("outlines")
+
+    if not selected_courses:
+        st.info("📚 Please select one or more courses to view course outlines.")
+    else:
+        for course_name in selected_courses:
+            course_id = course_map[course_name]
+            
+            # Fetch credit hours
+            cur.execute("""
+                SELECT credit_hours
+                FROM courses
+                WHERE course_id = ?
+            """, (course_id,))
+            credit_result = cur.fetchone()
+            credit_hours = credit_result[0] if credit_result else 3
+            
+            st.markdown(f"""
+            <div class="course-card">
+                <div style="display: flex; justify-content: space-between; align-items: center;">
+                    <h4 style="margin:0; color: white;">📖 {course_name}</h4>
+                    <span style="background: rgba(255,255,255,0.2); padding: 4px 8px; border-radius: 6px; font-size: 0.8rem;">
+                        {credit_hours} Credit Hours
+                    </span>
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+
+            # Fetch course outline topics from database
+            cur.execute("""
+                SELECT topic_number, topic_name
+                FROM course_outlines
+                WHERE course_id = ?
+                ORDER BY topic_number
+            """, (course_id,))
+            topics = cur.fetchall()
+
+            if topics:
+                # Create a nice table/display for topics
+                topic_data = []
+                for topic_num, topic_name in topics:
+                    topic_data.append({
+                        "Week/Topic #": f"Topic {topic_num}",
+                        "Topic Name": topic_name
+                    })
+                
+                df = pd.DataFrame(topic_data)
+                
+                # Display total topics count
+                st.markdown(f"**Total Topics: {len(topics)}**")
+                
+                # Display topics in a styled table
+                st.dataframe(
+                    df, 
+                    use_container_width=True, 
+                    hide_index=True,
+                    column_config={
+                        "Week/Topic #": st.column_config.TextColumn(
+                            "Week/Topic #",
+                            width="small",
+                        ),
+                        "Topic Name": st.column_config.TextColumn(
+                            "Topic Name",
+                            width="large",
+                        ),
+                    }
+                )
+                
+                # Alternative: Display as expandable sections
+                with st.expander("📑 View as List"):
+                    for topic_num, topic_name in topics:
+                        st.markdown(f"**Topic {topic_num}:** {topic_name}")
+            else:
+                st.info(f"No course outline available for {course_name}.")
             
             st.markdown("---")
 # ==================================================
