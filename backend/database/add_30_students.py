@@ -15,11 +15,11 @@ print("📚 Starting to add 30 students with complete data...")
 # 1. FIRST, ENSURE 5 COURSES EXIST WITH CREDIT HOURS
 # =============================================
 courses_data = [
-    ("Calculus", 3),
-    ("Data Structures", 3),
-    ("Programming Fundamentals", 3),
-    ("Functional English", 2),
-    ("Islamic Studies", 1)
+    ("Operating Systems", 3),
+    ("Database Management Systems", 3),
+    ("Software Design and Architecture", 3),
+    ("Design Analysis of Algorithms", 2),
+    ("Engineering Management", 1)
 ]
 
 print("\n📖 Setting up courses...")
