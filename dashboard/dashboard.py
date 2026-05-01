@@ -307,6 +307,71 @@ st.markdown("""
     transform: translateX(5px);
     transition: all 0.2s ease;
 }
+    /* ── Lectures Page Styling ── */
+    .lecture-row {
+        background: white;
+        padding: 1rem 1.25rem;
+        border-radius: 12px;
+        margin-bottom: 0.75rem;
+        border: 1px solid #e2e8f0;
+        box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+        transition: all 0.2s ease;
+        display: flex;
+        align-items: center;
+        gap: 1rem;
+    }
+    
+    .lecture-row:hover {
+        box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+        border-color: #3b82f6;
+        transform: translateX(3px);
+    }
+    
+    .lecture-icon {
+        font-size: 2rem;
+        min-width: 50px;
+        text-align: center;
+    }
+    
+    .lecture-info {
+        flex: 1;
+    }
+    
+    .lecture-info h4 {
+        margin: 0 0 0.25rem 0;
+        color: #1e293b;
+        font-size: 1rem;
+        font-weight: 600;
+    }
+    
+    .lecture-info p {
+        margin: 0;
+        color: #64748b;
+        font-size: 0.85rem;
+    }
+    
+    .lecture-download-btn {
+        min-width: 120px;
+    }
+    
+    /* Select box styling */
+    .stSelectbox > label {
+        font-weight: 600;
+        color: #334155;
+        font-size: 1rem;
+    }
+    
+    /* Lecture count badge */
+    .lecture-count-badge {
+        display: inline-block;
+        background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%);
+        color: white;
+        padding: 0.25rem 0.75rem;
+        border-radius: 20px;
+        font-size: 0.85rem;
+        font-weight: 600;
+        margin-left: 0.5rem;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -410,6 +475,7 @@ with st.sidebar:
         [
             "🏠 Dashboard",
             "📋 Course Outline",  # Added new page
+            "📚 Lectures",  # Added lectures page
             "👤 Personal Info",
             "📝 Quizzes",
             "📂 Assignments",
@@ -636,6 +702,122 @@ elif page == "📋 Course Outline":
                 st.info(f"No course outline available for {course_name}.")
             
             st.markdown("---")
+# ==================================================
+# PAGE: LECTURES
+# ==================================================
+elif page == "📚 Lectures":
+    st.title("📚 Course Lectures")
+    
+    # Single course selection
+    selected_course = st.selectbox(
+        "📖 Select a course to view lectures",
+        options=["-- Select a course --"] + course_names,
+        key="lectures_course_selector"
+    )
+    
+    if selected_course == "-- Select a course --":
+        st.info("📚 Please select a course to display the respective lectures.")
+    else:
+        course_id = course_map[selected_course]
+        
+        # Fetch credit hours
+        cur.execute("""
+            SELECT credit_hours
+            FROM courses
+            WHERE course_id = ?
+        """, (course_id,))
+        credit_result = cur.fetchone()
+        credit_hours = credit_result[0] if credit_result else 3
+        
+        # Course header
+        st.markdown(f"""
+        <div class="course-card">
+            <div style="display: flex; justify-content: space-between; align-items: center;">
+                <h4 style="margin:0; color: white;">📖 {selected_course}</h4>
+                <span style="background: rgba(255,255,255,0.2); padding: 4px 8px; border-radius: 6px; font-size: 0.8rem;">
+                    {credit_hours} Credit Hours
+                </span>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+        
+        # Fetch lectures for selected course
+        cur.execute("""
+            SELECT lecture_id, lecture_number, lecture_title, file_name, 
+                   file_data, file_type, file_size
+            FROM lectures
+            WHERE course_id = ?
+            ORDER BY lecture_number
+        """, (course_id,))
+        lectures = cur.fetchall()
+        
+        if lectures:
+            # Lecture count with styled badge
+            st.markdown(f"""
+            <h3 style="margin-bottom: 1rem;">
+                📑 Available Lectures 
+                <span class="lecture-count-badge">{len(lectures)} lectures</span>
+            </h3>
+            """, unsafe_allow_html=True)
+            
+            # Display lectures in a clean layout
+            for lecture in lectures:
+                lecture_id, lecture_num, lecture_title, file_name, file_data, file_type, file_size = lecture
+                
+                # Format file size
+                if file_size:
+                    if file_size < 1024 * 1024:
+                        size_str = f"{file_size / 1024:.1f} KB"
+                    else:
+                        size_str = f"{file_size / (1024 * 1024):.1f} MB"
+                else:
+                    size_str = "Unknown"
+                
+                # File type icon
+                file_icons = {
+                    'PDF': '📕',
+                    'PPTX': '📊',
+                    'PPT': '📊'
+                }
+                file_icon = file_icons.get(file_type, '📄')
+                
+                # MIME type for download
+                mime_map = {
+                    'PDF': 'application/pdf',
+                    'PPTX': 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+                    'PPT': 'application/vnd.ms-powerpoint'
+                }
+                mime_type = mime_map.get(file_type, 'application/octet-stream')
+                
+                # Create a nice card-like row using columns
+                col1, col2, col3 = st.columns([0.5, 4, 1])
+                
+                with col1:
+                    st.markdown(f"<div class='lecture-icon'>{file_icon}</div>", unsafe_allow_html=True)
+                
+                with col2:
+                    st.markdown(f"""
+                    <div class='lecture-info'>
+                        <h4>Lecture {lecture_num}: {lecture_title}</h4>
+                        <p>{file_type} • {size_str} • {file_name}</p>
+                    </div>
+                    """, unsafe_allow_html=True)
+                
+                with col3:
+                    st.download_button(
+                        label="⬇️ Download",
+                        data=file_data,
+                        file_name=file_name,
+                        mime=mime_type,
+                        key=f"dl_{lecture_id}",
+                        use_container_width=True
+                    )
+                
+                # Subtle separator
+                st.markdown("<hr style='margin: 0.5rem 0; border-color: #f1f5f9;'>", unsafe_allow_html=True)
+        else:
+            st.warning("📭 No lectures available for this course yet.")
+            st.info("Lectures will be uploaded by the administration soon.")
 # ==================================================
 # PAGE: PERSONAL INFO
 # ==================================================
