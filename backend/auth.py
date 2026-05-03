@@ -1,4 +1,4 @@
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, send_from_directory
 from flask_cors import CORS
 import sqlite3
 import bcrypt
@@ -8,7 +8,15 @@ app = Flask(__name__)
 CORS(app)
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.path.join(BASE_DIR, "database", "lms.db")
+@app.route("/")
+def index():
+    login_ui_dir = os.path.join(BASE_DIR, "..", "ui")
+    return send_from_directory(login_ui_dir, "login.html")
 
+@app.route("/styles.css")
+def styles():
+    login_ui_dir = os.path.join(BASE_DIR, "..", "ui")
+    return send_from_directory(login_ui_dir, "styles.css")
 @app.route("/login", methods=["POST"])
 def login():
     data = request.json
