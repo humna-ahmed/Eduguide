@@ -1,2 +1,0 @@
-PREDICTION_JOB_ID=ftjob-mdq1u6cxCq6cNny5oh9z3b2Z
-PLANNER_JOB_ID=ftjob-Nnym1v3AnomyxkCP1sxGzqyW

@@ -1,3 +1,4 @@
+# add_30_students.py
 import sqlite3
 import os
 import bcrypt

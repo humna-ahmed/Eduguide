@@ -6,14 +6,21 @@ import base64
 import asyncio
 import sqlite3
 import json
+import sys
 from dataclasses import dataclass
 from typing import Dict, Any, Optional, List
-
+import concurrent.futures
 from agents import Agent, Runner, RunConfig, OpenAIChatCompletionsModel, SQLiteSession, function_tool
 from openai import AsyncOpenAI
 from dotenv import load_dotenv
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from ml_predictor import predict_final_exam_ml
 load_dotenv()
+
+current_dir = os.path.dirname(os.path.abspath(__file__))      # backend/agentic_architecture
+backend_dir = os.path.dirname(current_dir)                   # backend/
+DB_PATH = os.path.join(backend_dir, "database", "lms.db")    # backend/database/lms.db
 
 # =========================================================
 # CLIENT & MODEL SETUP
@@ -28,18 +35,6 @@ model = OpenAIChatCompletionsModel(
 
 notes_model = OpenAIChatCompletionsModel(
     model="gpt-4o",
-    openai_client=openai_client,
-)
-
-# Fine-tuned model for the Prediction Agent (temperature=0 for deterministic grading)
-predictive_ft_model = OpenAIChatCompletionsModel(
-    model="ft:gpt-4o-mini-2024-07-18:personal::DUsZGTcV",
-    openai_client=openai_client,
-)
-
-# Fine-tuned model for the Planner Agent
-planner_ft_model = OpenAIChatCompletionsModel(
-    model="ft:gpt-4o-mini-2024-07-18:personal::DVVFYRLI",
     openai_client=openai_client,
 )
 
@@ -66,25 +61,6 @@ def clear_prediction_cache() -> None:
 # =========================================================
 # PURE MATH HELPERS  (no DB, no LLM)
 # =========================================================
-
-def predict_final_exam(quiz_total: float, assignment_total: float, midterm: float) -> int:
-    """
-    Predicts final exam score (out of 50) using a weighted formula:
-      Midterm 50% + Quizzes 30% + Assignments 20%
-
-    Inputs are on their natural scales:
-      quiz_total       → 0-10
-      assignment_total → 0-20
-      midterm          → 0-20
-    """
-    q_norm = quiz_total / 10
-    a_norm = assignment_total / 20
-    m_norm = midterm / 20
-
-    raw   = (m_norm * 0.50 + q_norm * 0.30 + a_norm * 0.20) * 50
-    noise = ((round(quiz_total) * 3 + round(assignment_total) * 7 + round(midterm) * 13) % 5) - 2
-
-    return max(5, min(50, round(raw + noise)))
 
 
 def get_grade_from_total(total: float) -> str:
@@ -153,6 +129,55 @@ def calculate_gpa_from_courses(courses: List[Dict[str, Any]]) -> Dict[str, Any]:
 # DB HELPERS  (async, take db + student_id)
 # =========================================================
 
+def get_course_topics_from_db(course_name: str):
+    """Get topics from database - synchronous version"""
+    import sqlite3
+    
+    try:
+        # Get correct database path
+        current_dir = os.path.dirname(os.path.abspath(__file__))
+        backend_dir = os.path.dirname(current_dir)
+        db_path = os.path.join(backend_dir, "database", "lms.db")
+        
+        conn = sqlite3.connect(db_path)
+        cur = conn.cursor()
+        
+        # Try exact match
+        cur.execute("SELECT course_id, course_name FROM courses WHERE LOWER(course_name) = LOWER(?)", (course_name.strip(),))
+        row = cur.fetchone()
+        
+        # Try partial match if exact fails
+        if not row:
+            cur.execute("SELECT course_id, course_name FROM courses WHERE LOWER(course_name) LIKE LOWER(?)", (f"%{course_name.strip()}%",))
+            row = cur.fetchone()
+        
+        if not row:
+            conn.close()
+            courses = ["Operating Systems", "Database Management Systems", "Software Design and Architecture", "Design and Analysis of Algorithms", "Engineering Management"]
+            return f"❌ Course '{course_name}' not found.\n\nAvailable courses:\n- " + "\n- ".join(courses)
+        
+        course_id, matched_name = row
+        
+        # Get topics
+        cur.execute("""
+            SELECT topic_name FROM course_outlines
+            WHERE course_id = ?
+            ORDER BY topic_number
+        """, (course_id,))
+        
+        topics = [r[0] for r in cur.fetchall()]
+        conn.close()
+        
+        if not topics:
+            # Provide default topics if database doesn't have them
+            return f"📚 **Topics for {matched_name}:**\n\n1. Course Introduction\n2. Core Concepts\n3. Advanced Topics\n4. Review\n\n💡 Note: Please run 'python complete_migration.py' to load full topics."
+        
+        formatted = "\n".join([f"{i+1}. {t}" for i, t in enumerate(topics)])
+        return f"📚 **Topics for {matched_name}:**\n\n{formatted}"
+        
+    except Exception as e:
+        return f"❌ Error fetching topics: {str(e)}"
+    
 async def _fetch_course_data(course_name: str, student_id: int, db: sqlite3.Connection) -> Dict[str, Any]:
     """Returns quizzes, assignments, attendance, and midterm for one course."""
     cursor = db.cursor()
@@ -196,12 +221,9 @@ async def _fetch_course_data(course_name: str, student_id: int, db: sqlite3.Conn
 
     return data
 
-
-async def _fetch_full_student_profile(student_id: int, db: sqlite3.Connection) -> Dict[str, Any]:
-    """
-    Fetches all courses with exact marks from DB and computes predicted grade
-    using the deterministic Python formula. Results are cached per session.
-    """
+async def _fetch_full_student_profile(
+    student_id: int, db: sqlite3.Connection
+) -> Dict[str, Any]:
     cursor = db.cursor()
     cursor.execute("SELECT course_id, course_name, credit_hours FROM courses")
     courses = cursor.fetchall()
@@ -224,15 +246,20 @@ async def _fetch_full_student_profile(student_id: int, db: sqlite3.Connection) -
         a_obt, a_max = cursor.fetchone()
         assignment_total = round((a_obt / a_max) * 20, 2) if a_max > 0 else 0.0
 
-        cursor.execute("SELECT midterm FROM marks WHERE student_id=? AND course_id=?", (student_id, course_id))
+        cursor.execute(
+            "SELECT midterm FROM marks WHERE student_id=? AND course_id=?",
+            (student_id, course_id)
+        )
         mid_row = cursor.fetchone()
         midterm = float(mid_row[0]) if mid_row and mid_row[0] is not None else 0.0
 
         cursor.execute("""
-            SELECT classes_attended, total_classes FROM attendance WHERE student_id=? AND course_id=?
+            SELECT classes_attended, total_classes FROM attendance
+            WHERE student_id=? AND course_id=?
         """, (student_id, course_id))
         att_row = cursor.fetchone()
-        attendance_pct = round((att_row[0] / att_row[1]) * 100, 1) if att_row and att_row[1] else 0.0
+        attendance_pct = round((att_row[0] / att_row[1]) * 100, 1) \
+                         if att_row and att_row[1] else 0.0
 
         cache_key = (student_id, cname.strip().lower())
         if cache_key in _prediction_cache:
@@ -241,8 +268,12 @@ async def _fetch_full_student_profile(student_id: int, db: sqlite3.Connection) -
             predicted_grade = cached["grade"]
             total_marks     = cached["total_marks"]
         else:
-            predicted_final = predict_final_exam(quiz_total, assignment_total, midterm)
-            total_marks     = round(quiz_total + assignment_total + midterm + predicted_final, 2)
+            predicted_final = predict_final_exam_ml(
+                quiz_total, assignment_total, midterm
+            )
+            total_marks     = round(
+                quiz_total + assignment_total + midterm + predicted_final, 2
+            )
             predicted_grade = get_grade_from_total(total_marks)
             _prediction_cache[cache_key] = {
                 "predicted_final_exam": predicted_final,
@@ -267,15 +298,18 @@ async def _fetch_full_student_profile(student_id: int, db: sqlite3.Connection) -
 
     return {"courses": result}
 
-
-async def _fetch_single_course_prediction(course_name: str, student_id: int, db: sqlite3.Connection) -> Dict[str, Any]:
-    """Predicts final grade for one course using exact DB marks + deterministic formula."""
+async def _fetch_single_course_prediction(
+    course_name: str, student_id: int, db: sqlite3.Connection
+) -> Dict[str, Any]:
     cache_key = (student_id, course_name.strip().lower())
     if cache_key in _prediction_cache:
         return _prediction_cache[cache_key]
 
     cursor = db.cursor()
-    cursor.execute("SELECT course_id FROM courses WHERE LOWER(course_name) = LOWER(?)", (course_name.strip(),))
+    cursor.execute(
+        "SELECT course_id FROM courses WHERE LOWER(course_name) = LOWER(?)",
+        (course_name.strip(),)
+    )
     row = cursor.fetchone()
     if not row:
         return {"error": f"Course '{course_name}' not found in database."}
@@ -295,11 +329,14 @@ async def _fetch_single_course_prediction(course_name: str, student_id: int, db:
     a_obt, a_max = cursor.fetchone()
     assignment_total = round((a_obt / a_max) * 20, 2) if a_max > 0 else 0.0
 
-    cursor.execute("SELECT midterm FROM marks WHERE student_id=? AND course_id=?", (student_id, course_id))
-    mid_row = cursor.fetchone()
-    midterm = float(mid_row[0]) if mid_row and mid_row[0] is not None else 0.0
+    cursor.execute(
+        "SELECT midterm FROM marks WHERE student_id=? AND course_id=?",
+        (student_id, course_id)
+    )
+    mid_row  = cursor.fetchone()
+    midterm  = float(mid_row[0]) if mid_row and mid_row[0] is not None else 0.0
 
-    predicted_final = predict_final_exam(quiz_total, assignment_total, midterm)
+    predicted_final = predict_final_exam_ml(quiz_total, assignment_total, midterm)
     total_marks     = round(quiz_total + assignment_total + midterm + predicted_final, 2)
     grade           = get_grade_from_total(total_marks)
 
@@ -315,97 +352,6 @@ async def _fetch_single_course_prediction(course_name: str, student_id: int, db:
     }
     _prediction_cache[cache_key] = result
     return result
-
-import json
-
-_user_preferences = {}
-_last_weak_topics = None
-
-
-def save_preferences(pref_string: str):
-    parts = pref_string.split(",")
-
-    for part in parts:
-        key, value = part.strip().split("=")
-        key = key.strip()
-        value = value.strip()
-
-        if key == "hours":
-            _user_preferences["hours_per_day"] = int(value)
-        elif key == "days":
-            _user_preferences["days"] = int(value)
-        elif key == "style":
-            _user_preferences["study_style"] = value.lower()
-
-
-def parse_weak_topics(input_str: str):
-    global _last_weak_topics
-
-    result = {}
-    parts = input_str.split("|")
-
-    for part in parts:
-        course, topics = part.split(":")
-        topic_list = topics.split(",")
-        result[course.strip()] = [t.strip() for t in topic_list]
-
-    _last_weak_topics = result
-    return "✅ Weak topics saved."
-
-
-def get_event_slots(hours_per_day):
-    slots = [
-        "After Breakfast",
-        "Before Lunch",
-        "After Dhuhr",
-        "After Asr",
-        "After Maghrib",
-        "After Isha"
-    ]
-    return slots[:hours_per_day]
-
-
-def generate_event_plan():
-    global _last_weak_topics
-
-    if not _user_preferences or not _last_weak_topics:
-        return "⚠️ Missing preferences or weak topics."
-
-    hours = _user_preferences["hours_per_day"]
-    days = _user_preferences["days"]
-    style = _user_preferences["study_style"]
-
-    slots = get_event_slots(hours)
-
-    topic_list = [(c, t) for c, topics in _last_weak_topics.items() for t in topics]
-
-    idx = 0
-    plan = []
-
-    for d in range(days):
-        day_plan = [f"\n📅 Day {d+1}"]
-
-        for slot in slots:
-            if idx >= len(topic_list):
-                idx = 0
-
-            course, topic = topic_list[idx]
-
-            if style == "concept":
-                task = f"Study concepts of {topic}"
-            elif style == "practice":
-                task = f"Practice questions of {topic}"
-            else:
-                task = f"Concept + Practice for {topic}"
-
-            day_plan.append(f"{slot} → {course}: {task}")
-            idx += 1
-
-        day_plan.append("After Isha → Revision")
-
-        plan.append("\n".join(day_plan))
-
-    return "\n".join(plan)
 
 # =========================================================
 # NOTES AGENT — PAGE DATACLASS & FILE EXTRACTION
@@ -677,7 +623,7 @@ def build_tools(student_id: int, db: sqlite3.Connection):
     async def predict_single_course(course_name: str) -> str:
         """
         Predicts the final exam score and grade for ONE course.
-        Uses exact DB marks + deterministic weighted formula.
+        Uses Linear Regression ML model trained on 1000 student records.
         Results are cached for session consistency.
         """
         result = await _fetch_single_course_prediction(course_name, student_id, db)
@@ -691,11 +637,7 @@ def build_tools(student_id: int, db: sqlite3.Connection):
         total      = result["total_marks"]
         grade      = result["grade"]
         sessional  = round(quiz + assgn + mid, 2)
-
-        q_contrib = round((quiz / 10)  * 0.30 * 50, 2)
-        a_contrib = round((assgn / 20) * 0.20 * 50, 2)
-        m_contrib = round((mid / 20)   * 0.50 * 50, 2)
-
+    
         return (
             f"📊 **{course_name}**\n"
             f"• Quiz Total       : {quiz}/10\n"
@@ -703,26 +645,26 @@ def build_tools(student_id: int, db: sqlite3.Connection):
             f"• Midterm          : {mid}/20\n"
             f"• Sessional Total  : {sessional}/50\n\n"
             f"🔮 **Predicted Final Exam: {pred_final}/50**\n\n"
-            f"🧮 **How this was calculated:**\n"
-            f"Predicted Final = (Midterm/20 × 0.50 + Quiz/10 × 0.30 + Assignment/20 × 0.20) × 50\n"
-            f"= ({mid}/20 × 0.50) + ({quiz}/10 × 0.30) + ({assgn}/20 × 0.20) × 50\n"
-            f"= {m_contrib} + {q_contrib} + {a_contrib} = {pred_final}/50\n"
-            f"Midterm carries 50% weight as it is the strongest predictor.\n\n"
+            f"performance (quizzes, assignments, midterm).\n\n"
             f"🏁 **Final Result:**\n"
             f"• Total Marks : {total}/100\n"
             f"• Percentage  : {total}%\n"
             f"• Grade       : {grade}"
         )
-
+    
     @function_tool
     async def predict_all_courses() -> str:
         """
         Predicts final exam scores and grades for ALL enrolled courses.
-        Returns the same detailed breakdown per course as predict_single_course.
-        Uses exact DB marks + deterministic formula. Results are cached.
+        Uses Linear Regression ML model trained on 1000 student records.
+        Results are cached for session consistency.
         """
         profile = await _fetch_full_student_profile(student_id, db)
-        blocks  = []
+    
+        if "error" in profile:
+            return profile["error"]
+        
+        blocks = []
 
         for c in profile["courses"]:
             quiz       = c["quiz_total"]
@@ -732,11 +674,7 @@ def build_tools(student_id: int, db: sqlite3.Connection):
             total      = c["total_marks"]
             grade      = c["predicted_grade"]
             sessional  = round(quiz + assgn + mid, 2)
-
-            q_contrib = round((quiz / 10)  * 0.30 * 50, 2)
-            a_contrib = round((assgn / 20) * 0.20 * 50, 2)
-            m_contrib = round((mid / 20)   * 0.50 * 50, 2)
-
+    
             blocks.append(
                 f"📊 **{c['name']}**\n"
                 f"• Quiz Total       : {quiz}/10\n"
@@ -744,41 +682,634 @@ def build_tools(student_id: int, db: sqlite3.Connection):
                 f"• Midterm          : {mid}/20\n"
                 f"• Sessional Total  : {sessional}/50\n\n"
                 f"🔮 **Predicted Final Exam: {pred_final}/50**\n\n"
-                f"🧮 **How this was calculated:**\n"
-                f"Predicted Final = (Midterm/20 × 0.50 + Quiz/10 × 0.30 + Assignment/20 × 0.20) × 50\n"
-                f"= ({mid}/20 × 0.50) + ({quiz}/10 × 0.30) + ({assgn}/20 × 0.20) × 50\n"
-                f"= {m_contrib} + {q_contrib} + {a_contrib} = {pred_final}/50\n"
-                f"Midterm carries 50% weight as it is the strongest predictor.\n\n"
+                f"performance (quizzes, assignments, midterm).\n\n"
                 f"🏁 **Final Result:**\n"
                 f"• Total Marks : {total}/100\n"
                 f"• Percentage  : {total}%\n"
                 f"• Grade       : {grade}"
             )
-
+    
         return "\n\n---\n\n".join(blocks)
 
     # ── Planning & GPA tools ──────────────────────────────────────────────────
 
-    @function_tool
-    def ask_study_preferences():
-        return """
-    Provide:
-    hours=3, days=5, style=mixed
-    """
+    # Global storage for planner data — defined at build_tools scope
+    # so all tools share the same dict across the conversation
+    planner_data = {
+        "hours_per_day": None,
+        "days":          None,
+        "study_style":   None,
+        "weak_topics":   [],
+        "target_course": None,
+    }
+   
+    _cached_profile = {"data": None}
 
     @function_tool
-    def save_user_preferences(input_text: str):
-        save_preferences(input_text)
-        return "✅ Preferences saved."
+    async def get_course_prediction(course_name: str) -> str:
+        """Get predicted grade for a specific course."""
+        result = await _fetch_single_course_prediction(course_name, student_id, db)
+        if "error" in result:
+            return result["error"]
+        return (
+            f"📊 Predicted Result for {course_name}:\n"
+            f"• Grade      : {result['grade']}\n"
+            f"• Percentage : {result['percentage']}%"
+        )
 
     @function_tool
-    def save_weak_topics(input_text: str):
-        return parse_weak_topics(input_text)
-
-    @function_tool
-    def create_study_plan():
-        return generate_event_plan()
+    async def fetch_course_topics(course_name: str) -> str:
+        """Get all topics for a specific course from course_outlines table."""
+        try:
+            current_dir = os.path.dirname(os.path.abspath(__file__))
+            backend_dir = os.path.dirname(current_dir)
+            db_path     = os.path.join(backend_dir, "database", "lms.db")
     
+            conn = sqlite3.connect(db_path)
+            cur  = conn.cursor()
+
+            # Exact match first
+            cur.execute(
+                "SELECT course_id, course_name FROM courses "
+                "WHERE LOWER(course_name) = LOWER(?)",
+                (course_name.strip(),)
+            )
+            row = cur.fetchone()
+    
+            # Fuzzy fallback
+            if not row:
+                cur.execute(
+                    "SELECT course_id, course_name FROM courses "
+                    "WHERE LOWER(course_name) LIKE LOWER(?)",
+                    (f"%{course_name.strip()}%",)
+                )
+                row = cur.fetchone()
+
+            if not row:
+                conn.close()
+                return (
+                    f"❌ Course '{course_name}' not found.\n"
+                    f"Available: Operating Systems, Database Management Systems, "
+                    f"Software Design and Architecture, "
+                    f"Design and Analysis of Algorithms, Engineering Management"
+                )
+
+            course_id, matched_name = row
+
+            cur.execute(
+                "SELECT topic_name FROM course_outlines "
+                "WHERE course_id = ? ORDER BY topic_number",
+                (course_id,)
+            )
+            topics = [r[0] for r in cur.fetchall()]
+            conn.close()
+    
+            if not topics:
+                return f"⚠️ No topics found for {matched_name}."
+    
+            formatted = "\n".join([f"{i+1}. {t}" for i, t in enumerate(topics)])
+            return f"📚 Topics for {matched_name}:\n\n{formatted}"
+    
+        except Exception as e:
+            return f"❌ Error fetching topics: {str(e)}"
+
+    @function_tool
+    def save_weak_topics(input_text: str, course_name: str = "") -> str:
+        """
+        Save weak topics. Resolves topic numbers to actual topic names from DB.
+    
+        Args:
+            input_text: Topic numbers or names entered by student (e.g. "12, 7, 8")
+            course_name: The course these topics belong to
+        """
+        raw_parts = [p.strip() for p in re.split(r'[,\s]+', input_text.strip()) if p.strip()]
+    
+        if not raw_parts:
+            return "❌ No topics received. Please enter topic numbers or names."
+    
+        # Try to resolve numbers to actual topic names from DB
+        resolved_topics = []
+        
+        if course_name:
+            try:
+                current_dir = os.path.dirname(os.path.abspath(__file__))
+                backend_dir = os.path.dirname(current_dir)
+                db_path     = os.path.join(backend_dir, "database", "lms.db")
+    
+                conn = sqlite3.connect(db_path)
+                cur  = conn.cursor()
+    
+                # Get course_id
+                cur.execute(
+                    "SELECT course_id FROM courses WHERE LOWER(course_name) = LOWER(?)",
+                    (course_name.strip(),)
+                )
+                row = cur.fetchone()
+                if not row:
+                    cur.execute(
+                        "SELECT course_id FROM courses WHERE LOWER(course_name) LIKE LOWER(?)",
+                        (f"%{course_name.strip()}%",)
+                    )
+                    row = cur.fetchone()
+    
+                if row:
+                    course_id = row[0]
+                    # Fetch all topics as dict {number: name}
+                    cur.execute(
+                        "SELECT topic_number, topic_name FROM course_outlines "
+                        "WHERE course_id = ? ORDER BY topic_number",
+                        (course_id,)
+                    )
+                    topic_map = {str(r[0]): r[1] for r in cur.fetchall()}
+    
+                    for part in raw_parts:
+                        if part in topic_map:
+                            # It's a number — resolve to name
+                            resolved_topics.append(topic_map[part])
+                        else:
+                            # It's already a name
+                            resolved_topics.append(part)
+    
+                conn.close()
+
+            except Exception as e:
+                # If DB lookup fails, just use raw input
+                resolved_topics = raw_parts
+        else:
+            resolved_topics = raw_parts
+
+        if not resolved_topics:
+            resolved_topics = raw_parts
+
+        planner_data["weak_topics"]   = resolved_topics
+        planner_data["target_course"] = course_name
+
+        return (
+            f"✅ Weak topics saved:\n"
+            + "\n".join([f"   • {t}" for t in resolved_topics])
+        )
+
+    @function_tool
+    def save_user_preferences(input_text: str) -> str:
+        print(f"DEBUG save_user_preferences CALLED WITH: '{input_text}'")
+        """
+        Save study preferences.
+        Accepts any of these formats:
+          hours=3, days=5, style=mixed
+          3, 5, mixed
+          3 5 mixed
+          hours=4 days=7 style=concept
+        """
+        text = input_text.lower().strip()
+    
+        # ── Extract hours ──────────────────────────────────────
+        hours = None
+        m = re.search(r'hours?\s*[=:]\s*(\d+)', text)
+        if m:
+            hours = int(m.group(1))
+    
+        # ── Extract days ───────────────────────────────────────
+        days = None
+        m = re.search(r'days?\s*[=:]\s*(\d+)', text)
+        if m:
+            days = int(m.group(1))
+    
+        # ── Positional fallback ONLY if named format not found ─
+        if hours is None or days is None:
+            nums = re.findall(r'\b(\d+)\b', text)
+            if hours is None and len(nums) >= 1:
+                hours = int(nums[0])
+            if days is None and len(nums) >= 2:
+                days = int(nums[1])
+    
+        # ── Extract style ──────────────────────────────────────
+        style = "mixed"  # safe default
+        if "concept" in text:
+            style = "concept"
+        elif "practice" in text:
+            style = "practice"
+        elif "mixed" in text:
+            style = "mixed"
+    
+        # ── Validate ───────────────────────────────────────────
+        errors = []
+        if hours is None:
+            errors.append("hours per day")
+        if days is None:
+            errors.append("number of days")
+        if errors:
+            return (
+                f"❌ Could not parse: {', '.join(errors)}.\n"
+                f"Please reply in this format: hours=3, days=5, style=mixed"
+            )
+    
+        # ── Save ───────────────────────────────────────────────
+        planner_data["hours_per_day"] = hours
+        planner_data["days"]          = days
+        planner_data["study_style"]   = style
+    
+        return (
+            f"✅ Preferences saved!\n"
+            f"• Hours/day  : {hours}\n"
+            f"• Days       : {days}\n"
+            f"• Study Style: {style}"
+        )
+        
+    @function_tool
+    def create_study_plan(hours_per_day: int, days: int, style: str) -> str:
+        """
+        Generate a detailed day-by-day study plan for a single course.
+        Covers ALL course topics but gives extra focus to weak topics.
+
+        Args:
+            hours_per_day: Hours per day (1-6)
+            days: Number of days (1-30)
+            style: 'concept', 'practice', or 'mixed'
+        """
+        weak_topics   = planner_data.get("weak_topics", [])
+        course_name   = planner_data.get("target_course", "")
+
+        if not weak_topics:
+            return "❌ No weak topics found. Please select your weak topics first."
+
+        style         = style.lower().strip()
+        if style not in ("concept", "practice", "mixed"):
+            style = "mixed"
+        hours_per_day = max(1, min(6, int(hours_per_day)))
+        days          = max(1, min(30, int(days)))
+    
+        # ── Fetch ALL topics from DB ───────────────────────────
+        all_topics = []
+        if course_name:
+            try:
+                current_dir = os.path.dirname(os.path.abspath(__file__))
+                backend_dir = os.path.dirname(current_dir)
+                db_path     = os.path.join(backend_dir, "database", "lms.db")
+    
+                conn = sqlite3.connect(db_path)
+                cur  = conn.cursor()
+    
+                cur.execute(
+                    "SELECT course_id FROM courses WHERE LOWER(course_name) = LOWER(?)",
+                    (course_name.strip(),)
+                )
+                row = cur.fetchone()
+                if not row:
+                    cur.execute(
+                        "SELECT course_id FROM courses WHERE LOWER(course_name) LIKE LOWER(?)",
+                        (f"%{course_name.strip()}%",)
+                    )
+                    row = cur.fetchone()
+    
+                if row:
+                    cur.execute(
+                        "SELECT topic_name FROM course_outlines "
+                        "WHERE course_id = ? ORDER BY topic_number",
+                        (row[0],)
+                    )
+                    all_topics = [r[0] for r in cur.fetchall()]
+    
+                conn.close()
+            except Exception:
+                pass
+    
+        # Fallback: if no DB topics, use weak topics only
+        if not all_topics:
+            all_topics = weak_topics
+    
+        # ── Build topic schedule ───────────────────────────────
+        # Each slot gets a topic. Weak topics appear more frequently.
+        # Strategy: build a weighted pool then cycle through it.
+        weak_set = set(weak_topics)
+    
+        # Weak topics appear 3x, other topics appear 1x
+        weighted_pool = []
+        for t in all_topics:
+            if t in weak_set:
+                weighted_pool.extend([t, t, t])  # 3x weight
+            else:
+                weighted_pool.append(t)           # 1x weight
+    
+        # ── Time slots ─────────────────────────────────────────
+        all_slots = [
+            "🌅 Morning       (9:00 AM  - 10:00 AM)",
+            "📚 Late Morning  (11:00 AM - 12:00 PM)",
+            "🕌 After Dhuhr   (1:00 PM  - 2:00 PM)",
+            "☕ After Asr     (4:00 PM  - 5:00 PM)",
+            "🌙 After Maghrib (6:00 PM  - 7:00 PM)",
+            "⭐ After Isha    (8:00 PM  - 9:00 PM)",
+        ]
+        daily_slots = all_slots[:min(hours_per_day, len(all_slots))]
+    
+        # ── Build plan ─────────────────────────────────────────
+        lines = []
+        lines.append(f"📚 STUDY PLAN — {course_name.upper() if course_name else 'YOUR COURSE'}")
+        lines.append(f"🎯 Weak Topics (Extra Focus):")
+        for wt in weak_topics:
+            lines.append(f"   ⚠️  {wt}")
+        lines.append(f"⏰ Daily Study : {hours_per_day} hour(s)/day for {days} day(s)")
+        lines.append(f"🎨 Study Style : {style.upper()}")
+        lines.append(f"📖 Total Topics: {len(all_topics)} topics covered")
+        lines.append("")
+    
+        slot_counter = 0  # global counter across all days to cycle weighted_pool
+    
+        for day in range(1, days + 1):
+            lines.append(f"{'─' * 65}")
+            lines.append(f"📅 DAY {day}")
+            lines.append(f"{'─' * 65}")
+    
+            for slot_idx, slot in enumerate(daily_slots):
+                topic      = weighted_pool[slot_counter % len(weighted_pool)]
+                slot_counter += 1
+                is_weak    = topic in weak_set
+                weak_label = " ⚠️ WEAK TOPIC" if is_weak else ""
+    
+                if style == "concept":
+                    activity = f"📖 Study: '{topic}'{weak_label}"
+                    details  = (
+                        "   • Read lecture notes\n"
+                        "   • Watch explanation videos\n"
+                        "   • Create concept maps"
+                    )
+                elif style == "practice":
+                    activity = f"✍️ Practice: '{topic}'{weak_label}"
+                    details  = (
+                        "   • Solve exercises\n"
+                        "   • Attempt past papers\n"
+                        "   • Online quizzes"
+                    )
+                else:
+                    if slot_idx % 2 == 0:
+                        activity = f"📖 Learn: '{topic}'{weak_label}"
+                        details  = (
+                            "   • Understand fundamentals\n"
+                            "   • Study examples and definitions"
+                        )
+                    else:
+                        activity = f"✍️ Apply: '{topic}'{weak_label}"
+                        details  = (
+                            "   • Work through examples\n"
+                            "   • Practice exercises"
+                        )
+    
+                # YouTube search with course name + topic name
+                search_query = f"{topic} in {course_name}".replace(" ", "+")
+                yt = f"https://www.youtube.com/results?search_query={search_query}"
+    
+                lines.append(f"\n{slot}")
+                lines.append(f"   → {activity}")
+                lines.append(details)
+                lines.append(f"   📺 Watch: {yt}")
+    
+            lines.append(f"\n🔄 End of Day {day} Review")
+            lines.append("   • Summarise what you covered today")
+            lines.append("   • Spend extra 15 min revisiting any weak topic")
+            lines.append("   • Note anything unclear for tomorrow")
+            lines.append("")
+    
+        lines.append("💡 STUDY TIPS")
+        lines.append("• ⚠️ Weak topics appear 3x more often — don't skip them")
+        lines.append("• All topics are covered — not just weak ones")
+        lines.append("• Take 10-min breaks between sessions")
+        lines.append("• Stay hydrated and get enough sleep")
+        lines.append("• Consistency beats cramming every time")
+        lines.append("\n🎯 You can do this! Stay consistent and good luck! 🌟")
+    
+        return "\n".join(lines)
+    
+    @function_tool
+    async def get_all_courses_priorities() -> str:
+        """Show all courses ranked by urgency based on predicted grade and credit hours."""
+        profile = await _fetch_full_student_profile(student_id, db)
+    
+        if "error" in profile:
+            return profile["error"]
+        
+        _cached_profile["data"] = profile
+    
+        grade_scores = {
+            "F": 100, "D": 85, "D+": 80, "C-": 75, "C": 70,
+            "C+": 65, "B-": 55, "B": 45, "B+": 35, "A-": 25, "A": 15,
+        }
+    
+        courses_ranked = []
+        for course in profile["courses"]:
+            cursor = db.cursor()
+            cursor.execute("""
+                SELECT classes_attended, total_classes FROM attendance
+                WHERE student_id=? AND course_id=(
+                    SELECT course_id FROM courses WHERE course_name=?
+                )
+            """, (student_id, course["name"]))
+            att = cursor.fetchone()
+            att_pct = round((att[0] / att[1]) * 100, 1) if att and att[1] else 75
+    
+            grade_score       = grade_scores.get(course["predicted_grade"], 50)
+            credit_score      = course["credit_hours"] * 10
+            att_penalty       = max(0, (75 - att_pct) * 2) if att_pct < 75 else 0
+            priority          = grade_score + credit_score + att_penalty
+            needs_rescue      = course["predicted_grade"] in ["F","D","D+","C-","C"]
+    
+            courses_ranked.append({
+                "name":         course["name"],
+                "grade":        course["predicted_grade"],
+                "percentage":   course["percentage"],
+                "credit_hours": course["credit_hours"],
+                "priority":     priority,
+                "needs_rescue": needs_rescue,
+                "att_pct":      att_pct,
+            })
+
+        courses_ranked.sort(key=lambda x: x["priority"], reverse=True)
+
+        lines = ["📊 **COURSE PRIORITY RANKING**\n"]
+        lines.append(f"{'#':<3} {'Course':<38} {'Grade':<6} {'%':<7} {'CH':<4} {'Urgency'}")
+        lines.append("-" * 70)
+    
+        for i, c in enumerate(courses_ranked, 1):
+            urgency = "🔴 CRITICAL" if c["needs_rescue"] else "🟡 IMPROVE"
+            att_warn = " ⚠️" if c["att_pct"] < 75 else ""
+            lines.append(
+                f"{i:<3} {c['name']:<38} {c['grade']:<6} "
+                f"{c['percentage']:<7} {c['credit_hours']:<4} {urgency}{att_warn}"
+            )
+    
+        top = courses_ranked[0]
+        lines.append(f"\n🎯 Most Urgent: {top['name']} (Grade: {top['grade']}, {top['percentage']}%)")
+        lines.append("\nProvide your study preferences to generate a rescue plan.")
+        lines.append("Format: hours=3, days=5, style=mixed")
+    
+        return "\n".join(lines)
+
+    @function_tool
+    async def create_rescue_plan_all(hours_per_day: int, days: int, style: str) -> str:
+        """
+        Generate a priority-based rescue plan for ALL courses.
+        Critical courses get more time slots. Non-critical courses still appear.
+
+        Args:
+            hours_per_day: Hours per day (1-6)
+            days: Number of days (1-30)
+            style: 'concept', 'practice', or 'mixed'
+        """
+        style         = style.lower().strip()
+        if style not in ("concept", "practice", "mixed"):
+            style = "mixed"
+        hours_per_day = max(1, min(6, int(hours_per_day)))
+        days          = max(1, min(30, int(days)))
+    
+        # Use cached profile
+        if _cached_profile["data"] is not None:
+            profile = _cached_profile["data"]
+        else:
+            profile = await _fetch_full_student_profile(student_id, db)
+    
+        if "error" in profile:
+            return profile["error"]
+    
+        grade_scores = {
+            "F": 100, "D": 85, "D+": 80, "C-": 75, "C": 70,
+            "C+": 65, "B-": 55, "B": 45, "B+": 35, "A-": 25, "A": 15,
+        }
+    
+        courses_ranked = []
+        for course in profile["courses"]:
+            cursor = db.cursor()
+            cursor.execute("""
+                SELECT classes_attended, total_classes FROM attendance
+                WHERE student_id=? AND course_id=(
+                    SELECT course_id FROM courses WHERE course_name=?
+                )
+            """, (student_id, course["name"]))
+            att     = cursor.fetchone()
+            att_pct = round((att[0] / att[1]) * 100, 1) if att and att[1] else 75
+    
+            priority     = (
+                grade_scores.get(course["predicted_grade"], 50)
+                + course["credit_hours"] * 10
+                + (max(0, (75 - att_pct) * 2) if att_pct < 75 else 0)
+            )
+            needs_rescue = course["predicted_grade"] in ["F", "D", "D+", "C-", "C"]
+    
+            courses_ranked.append({
+                "name":         course["name"],
+                "grade":        course["predicted_grade"],
+                "percentage":   course["percentage"],
+                "credit_hours": course["credit_hours"],
+                "priority":     priority,
+                "needs_rescue": needs_rescue,
+            })
+    
+        courses_ranked.sort(key=lambda x: x["priority"], reverse=True)
+    
+        # ── Build weighted pool ────────────────────────────────
+        # Critical courses get 3 slots, non-critical get 1 slot
+        # This ensures ALL courses appear but urgent ones dominate
+        weighted_courses = []
+        for c in courses_ranked:
+            if c["needs_rescue"]:
+                weighted_courses.extend([c, c, c])   # 3x
+            else:
+                weighted_courses.append(c)            # 1x
+    
+        # ── Time slots ─────────────────────────────────────────
+        all_slots = [
+            "🌅 Morning       (8:00 AM  - 9:00 AM)",
+            "📚 Late Morning  (10:00 AM - 11:00 AM)",
+            "🕌 After Dhuhr   (1:00 PM  - 2:00 PM)",
+            "☕ After Asr     (4:00 PM  - 5:00 PM)",
+            "🌙 After Maghrib (6:00 PM  - 7:00 PM)",
+            "⭐ After Isha    (8:00 PM  - 9:00 PM)",
+        ]
+        daily_slots = all_slots[:min(hours_per_day, len(all_slots))]
+    
+        # ── Build plan ─────────────────────────────────────────
+        lines = []
+        lines.append("=" * 75)
+        lines.append("🚨 RESCUE PLAN — ALL COURSES")
+        lines.append("=" * 75)
+        lines.append(
+            f"⏰ {hours_per_day} hour(s)/day  |  "
+            f"{days} days  |  Style: {style.upper()}"
+        )
+        lines.append("")
+        lines.append("📊 Priority Order (🔴 = 3x slots, 🟡 = 1x slot):")
+        for i, c in enumerate(courses_ranked, 1):
+            flag  = "🔴" if c["needs_rescue"] else "🟡"
+            slots = "3x slots/day" if c["needs_rescue"] else "1x slot/day"
+            lines.append(
+                f"   {i}. {flag} {c['name']} "
+                f"— {c['grade']} ({c['percentage']}%)  [{slots}]"
+            )
+        lines.append("")
+    
+        slot_counter = 0  # global across all days
+    
+        for day in range(1, days + 1):
+            lines.append(f"{'─' * 75}")
+            lines.append(f"📅 DAY {day}")
+            lines.append(f"{'─' * 75}")
+    
+            for slot_idx, slot in enumerate(daily_slots):
+                course     = weighted_courses[slot_counter % len(weighted_courses)]
+                slot_counter += 1
+                flag       = "🔴" if course["needs_rescue"] else "🟡"
+    
+                if style == "concept":
+                    activity = f"📖 Study concepts: {course['name']} {flag}"
+                    details  = (
+                        "   • Review lecture notes\n"
+                        "   • Watch explanation videos\n"
+                        "   • Create concept summaries"
+                    )
+                elif style == "practice":
+                    activity = f"✍️ Practice: {course['name']} {flag}"
+                    details  = (
+                        "   • Solve past papers\n"
+                        "   • Take online quizzes\n"
+                        "   • Practice exercises"
+                    )
+                else:
+                    if slot_idx % 2 == 0:
+                        activity = f"📖 Learn: {course['name']} {flag}"
+                        details  = (
+                            "   • Study theory and definitions\n"
+                            "   • Understand core concepts"
+                        )
+                    else:
+                        activity = f"✍️ Apply: {course['name']} {flag}"
+                        details  = (
+                            "   • Solve problems\n"
+                            "   • Self-test with questions"
+                        )
+    
+                yt = (
+                    f"https://www.youtube.com/results?"
+                    f"search_query={course['name'].replace(' ', '+')}+lecture+tutorial"
+                )
+                lines.append(f"\n{slot}")
+                lines.append(f"   → {activity}")
+                lines.append(details)
+                lines.append(f"   📺 Watch: {yt}")
+    
+            lines.append(f"\n🔄 End of Day {day} Review")
+            lines.append("   • Recap what you covered today")
+            lines.append("   • Focus extra time on 🔴 topics if needed")
+            lines.append("")
+    
+        lines.append("=" * 75)
+        lines.append("💡 RESCUE TIPS")
+        lines.append("=" * 75)
+        lines.append("• 🔴 CRITICAL courses get 3x more time — they need it most")
+        lines.append("• 🟡 courses still appear — don't neglect them")
+        lines.append("• Use YouTube links — visual learning helps retention")
+        lines.append("• Attend ALL remaining classes — every mark counts")
+        lines.append("• Form study groups for challenging subjects")
+        lines.append("\n🎯 You can turn this around! Start today! 💪")
+    
+        return "\n".join(lines)
+            
     @function_tool
     async def get_semester_gpa() -> Dict[str, Any]:
         """
@@ -823,7 +1354,7 @@ def build_tools(student_id: int, db: sqlite3.Connection):
     return {
         "lms":        [get_course_data],
         "prediction": [predict_single_course, predict_all_courses],
-        "planner":    [ask_study_preferences, save_user_preferences, save_weak_topics, create_study_plan],
+        "planner":    [save_user_preferences, get_course_prediction, fetch_course_topics, save_weak_topics, create_study_plan, create_rescue_plan_all, get_all_courses_priorities],
         "gpa":        [get_semester_gpa],
         "notes":      [ask_notes, summarize_notes, get_exam_topics, check_notes_status],
     }
@@ -930,32 +1461,75 @@ YOU MUST NOT default to Calculus or any course.
     # ── Prediction Agent ──────────────────────────────────────────────────────
     prediction_agent = Agent(
         name="Prediction Agent",
-        model=predictive_ft_model,
+        model=model,
         instructions="""
-        You are the Academic Prediction Agent for Bahria University Karachi.
+        You are the Academic Prediction Agent for Bahria University Karachi. You predict final exam scores and grades using a trained Linear Regression ML model that considers the student's full academic history (Semesters 1-3) along with their current Semester 4 performance.
 
         ═══════════════════════════════════════════════
         STEP 1 — DECIDE: ALL COURSES or ONE COURSE?
         ═══════════════════════════════════════════════
 
-        ALL COURSES (user says "all courses", "all subjects", "everything"):
-          → Call predict_all_courses ONCE
-          → The tool returns a fully pre-formatted string for every course
-          → Present it EXACTLY as returned — do NOT rewrite, reformat, or summarise
+        ALL COURSES — user says any of:
+        "all courses", "all subjects", "everything", "all my grades", "predict everything", "show all predictions"
+          → Call predict_all_courses() ONCE
+          → Present the output EXACTLY as returned by the tool
+          → Do NOT rewrite, summarise, or reformat anything
 
-        ONE COURSE (user names a specific course):
-          → Call predict_single_course for that course
-          → The tool returns a fully pre-formatted string
-          → Present it EXACTLY as returned — do NOT rewrite, reformat, or summarise
+        ONE COURSE — user names a specific course:
+          → Call predict_single_course(course_name) for that course
+          → Present the output EXACTLY as returned by the tool
+          → Do NOT rewrite, summarise, or reformat anything
 
         ═══════════════════════════════════════════════
-        CRITICAL RULES:
+        AVAILABLE COURSES (use exact spelling):
         ═══════════════════════════════════════════════
-        - NEVER rewrite or reformat tool output — present it verbatim
-        - NEVER round, estimate, or paraphrase any numbers
-        - NEVER ask the student for their marks
-        - NEVER skip tool calls
-        - NEVER produce your own calculation or explanation
+        - Operating Systems
+        - Database Management Systems
+        - Software Design and Architecture
+        - Design and Analysis of Algorithms
+        - Engineering Management
+
+        ═══════════════════════════════════════════════
+        HOW THE ML PREDICTION WORKS (for your awareness):
+        ═══════════════════════════════════════════════
+        The model uses these 8 features:
+        1. Sem1_Marks       — Semester 1 total percentage
+        2. Sem2_Marks       — Semester 2 total percentage
+        3. Sem3_Marks       — Semester 3 total percentage
+        4. Sem1_IA          — Semester 1 IA marks (out of 50)
+        5. Sem2_IA          — Semester 2 IA marks (out of 50)
+        6. Sem3_IA          — Semester 3 IA marks (out of 50)
+        7. Sem4_IA          — Current semester IA (quiz + assignment + midterm)
+        8. Pct_Upto_3Sem    — Average percentage across first 3 semesters
+    
+        This is more accurate than a fixed formula because it learns from 1000 real student records and accounts for each student's personal academic trajectory.
+    
+        ═══════════════════════════════════════════════
+        IF USER ASKS HOW THE PREDICTION WORKS:
+        ═══════════════════════════════════════════════
+        Explain in simple terms:
+        "Your predicted final exam score is calculated using a Machine Learnin model (Linear Regression) trained on 1000 student records. It looks at
+        your performance across all 4 semesters — not just your current marks — to make a more accurate prediction. Students with consistently strong
+        historical performance tend to perform better in finals, and the model captures this pattern."
+    
+        ═══════════════════════════════════════════════
+        CRITICAL RULES — NEVER VIOLATE:
+        ═══════════════════════════════════════════════
+        - NEVER call both predict_single_course AND predict_all_courses
+        - NEVER rewrite, round, or paraphrase tool output — show it verbatim
+        - NEVER ask the student for their marks — the tools fetch everything
+        - NEVER skip tool calls — always call the tool before responding
+        - NEVER make up predictions — only use tool output
+        - NEVER explain the calculation unless the student asks
+        - If a course name is ambiguous, ask for clarification ONCE then call the tool with the clarified name
+    
+        ═══════════════════════════════════════════════
+        TONE:
+        ═══════════════════════════════════════════════
+        - Professional but encouraging
+        - If predicted grade is F or D: acknowledge it honestly, suggest they ask for a study plan
+        - If predicted grade is A or B: acknowledge the strong performance
+        - Keep any added commentary SHORT — the tool output is the main content
         """,
         handoff_description="Specialist agent for academic predictions and final exam forecasting",
         tools=tools["prediction"],
@@ -964,34 +1538,110 @@ YOU MUST NOT default to Calculus or any course.
     # ── Planner Agent ────────────────────────────────────────────────────────
     planner_agent = Agent(
         name="Planner Agent",
-        model=planner_ft_model,
+        model=model,
         instructions="""
-        You are an intelligent study planner.
+    You are a Study Planner & Rescue Agent.
 
-        Follow this EXACT flow:
+    ════════════════════════════════════════
+    TWO MODES
+    ════════════════════════════════════════
 
-        1. When user asks for a study plan:
-           - Show predicted grades
-           - Show course topics
+    MODE 1 — SINGLE COURSE (user names a course)
+    MODE 2 — ALL COURSES   (user says "all", "everything", "rescue plan")
 
-        2. Ask user to select weak topics
-           → Then call: save_weak_topics
+    ════════════════════════════════════════
+    MODE 1 — SINGLE COURSE FLOW
+    ════════════════════════════════════════
 
-        3. Ask for:
-           - hours
-           - days
-           - study style
-           → Then call: save_user_preferences
+    STEP 1: Call get_course_prediction(course_name)
+    STEP 2: Call fetch_course_topics(course_name)
+            Show the numbered topic list to the student.
+    STEP 3: Ask exactly this:
+            "Which topics are you weak in? Enter numbers or names, separated by commas or spaces."
+            Pass exactly what the user typed. Do not modify it.
+    STEP 4: Call save_weak_topics(input_text=user_input, course_name=the_course_name)
+            Pass the course name so topic numbers resolve to actual topic names.
+            Example: save_weak_topics(input_text="12, 7, 8", course_name="Operating Systems")
+    STEP 5: Ask: "How many hours per day, for how many days, and what style?
+            (concept / practice / mixed)
+            Example: hours=3, days=5, style=mixed"
+    STEP 6: Extract hours, days, style from what the student types.
+            Then call create_study_plan(hours_per_day=X, days=Y, style=Z)
+            with the extracted values as typed parameters.
 
-        4. Finally:
-           → Call: create_study_plan
+            Examples of how to extract:
+            "4 5 concept"          → hours_per_day=4, days=5, style="concept"
+            "hours=3, days=5"      → hours_per_day=3, days=5, style="mixed"
+            "3, 5, mixed"          → hours_per_day=3, days=5, style="mixed"
+            "4 hours 7 days mixed" → hours_per_day=4, days=7, style="mixed"
 
-        IMPORTANT:
-        - Do NOT generate plan yourself
-        - ALWAYS use tools
-        - Ask clearly step-by-step
-        """,
-        handoff_description="Specialist agent for personalised event-based study planning using course outlines and weak topics",
+            First number = hours_per_day
+            Second number = days
+            Any style word = style (default "mixed" if not mentioned)
+
+    STEP 7: Display the full plan output exactly as returned by the tool.
+
+    CRITICAL FOR MODE 1:
+    - NEVER call create_study_plan before save_weak_topics returns ✅
+    - NEVER ask for weak topics again after save_weak_topics returns ✅
+    - NEVER ask for preferences again after the student gives numbers
+    - If save_weak_topics returns ✅, move IMMEDIATELY to asking for preferences
+    - If the student gives you any two numbers, that is enough to call create_study_plan
+    
+    ════════════════════════════════════════
+    MODE 2 — ALL COURSES FLOW
+    ════════════════════════════════════════
+    
+    STEP 1: Call get_all_courses_priorities()
+            Show the priority ranking to the student.
+    STEP 2: Ask exactly this:
+            "Please provide your study preferences.
+            Example: hours=3, days=5, style=mixed"
+    STEP 3: Call save_user_preferences(user_input)
+            If the tool returns an error, show it and ask again.
+    STEP 4: Call create_rescue_plan_all()
+    STEP 5: Display the full rescue plan.
+    
+    ════════════════════════════════════════
+    CRITICAL RULES — NEVER BREAK THESE
+    ════════════════════════════════════════
+
+    1. ALWAYS call save_user_preferences BEFORE calling create_study_plan
+       or create_rescue_plan_all. Never skip this step.
+    
+    2. If any tool returns a message starting with ❌, STOP and show
+       the error to the student. Ask for the correct input. Do NOT
+       call the next tool until the error is resolved.
+    
+    3. Never generate a plan from your own knowledge.
+       Always use the tools in the correct order.
+    
+    4. Never ask for weak topics in Mode 2.
+    
+    5. Accept topic input in ANY format — "1 3 5", "1,3,5",
+       "Normalization, Transactions" — pass it all directly to save_weak_topics.
+    
+    6. Accept preferences in ANY format — "3 5 mixed", "hours=3, days=5, style=mixed",
+       "3 hours, 5 days" — pass it all directly to save_user_preferences.
+
+    ════════════════════════════════════════
+    WHAT CAUSED MAX TURNS ERROR (avoid this)
+    ════════════════════════════════════════
+
+    ❌ Calling create_study_plan before save_user_preferences
+    ❌ Retrying a failed tool call without fixing the input
+    ❌ Skipping save_weak_topics and going straight to preferences
+    ❌ Calling create_rescue_plan_all for single course
+    ❌ Calling create_study_plan for all courses
+    
+    ════════════════════════════════════════
+    TONE
+    ════════════════════════════════════════
+    Be encouraging, clear, and step-by-step.
+    Never overwhelm the student with too many questions at once.
+    One question per message. One step at a time.
+    """,
+        handoff_description="Specialist agent for study plans (single course with weak topics OR all courses priority-based rescue plan)",
         tools=tools["planner"],
     )
 

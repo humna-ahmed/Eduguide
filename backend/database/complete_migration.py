@@ -1,3 +1,5 @@
+# complete_migration.py:
+
 """
 Complete LMS Migration & Seeding Script
 ========================================

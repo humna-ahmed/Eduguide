@@ -1160,6 +1160,51 @@ elif page == "🤖 AI Assistant":
         st.markdown("### 📖 Upload Lecture Notes")
         st.caption("Upload any file and ask me to explain it.")
 
+        # ── Fix text visibility in dark sidebar ───────────────
+        st.markdown("""
+            <style>
+            /* File uploader label text */
+            [data-testid="stFileUploaderDropzoneInstructions"] p,
+            [data-testid="stFileUploaderDropzoneInstructions"] span,
+            [data-testid="stFileUploaderDropzone"] p,
+            [data-testid="stFileUploaderDropzone"] span,
+            [data-testid="stFileUploaderDropzone"] small,
+            .stFileUploader label,
+            .stFileUploader p,
+            .stFileUploader span,
+            section[data-testid="stSidebar"] .stFileUploader label p,
+            section[data-testid="stSidebar"] .stFileUploader span {
+                color: #FFFFFF !important;
+                opacity: 1 !important;
+            }
+            /* Browse files button */
+            section[data-testid="stSidebar"] .stFileUploader button {
+                color: #FFFFFF !important;
+                border-color: #FFFFFF !important;
+                background-color: transparent !important;
+            }
+            /* Drag and drop zone border */
+            section[data-testid="stSidebar"] [data-testid="stFileUploaderDropzone"] {
+                border-color: rgba(255, 255, 255, 0.4) !important;
+            }
+            /* Caption text */
+            section[data-testid="stSidebar"] .stCaption p {
+                color: rgba(255, 255, 255, 0.7) !important;
+                }
+            /* Success and info messages */
+            section[data-testid="stSidebar"] .stSuccess p,
+            section[data-testid="stSidebar"] .stInfo p {
+                color: #FFFFFF !important;
+            }
+            
+            section[data-testid="stSidebar"] * {
+                color: #FFFFFF !important;
+            }
+            
+            
+            </style>
+        """, unsafe_allow_html=True)
+
         uploaded_file = st.file_uploader(
             "Supported: PDF, PowerPoint (.pptx), Word (.docx), Images",
             type=["pdf", "pptx", "docx", "png", "jpg", "jpeg", "webp"],
@@ -1167,13 +1212,12 @@ elif page == "🤖 AI Assistant":
         )
 
         if uploaded_file is not None:
-            # Only re-process if a NEW file is uploaded
             if st.session_state.get("notes_filename") != uploaded_file.name:
                 with st.spinner(f"Reading '{uploaded_file.name}'..."):
                     try:
                         import tempfile
                         import os
-
+    
                         suffix = os.path.splitext(uploaded_file.name)[1]
 
                         with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
@@ -1192,14 +1236,13 @@ elif page == "🤖 AI Assistant":
                             f"{'slide' if uploaded_file.name.endswith('.pptx') else 'page'}(s) loaded. "
                             f"Now ask me anything about it!"
                         )
-
+    
                     except Exception as e:
                         st.error(f"Could not read file: {e}")
-
-        # Show currently loaded file
+    
         if notes_file_loaded():
             st.info(f"📄 **Loaded:** {get_notes_summary()}")
-
+    
             if st.button("🗑️ Remove File", use_container_width=True):
                 clear_notes_store()
                 st.session_state.notes_filename = ""
@@ -1210,7 +1253,7 @@ elif page == "🤖 AI Assistant":
     # FIX: initialise messages AND welcome together in one block
     # so the welcome message is always present on first load.
     # ----------------------------------
-    if "messages" not in st.session_state:
+    if "messages" in st.session_state:
         welcome_msg = (
             f"👋 **Hello {student_name.split()[0]}!** I'm your Academic AI Companion.\n\n"
             "I'm here to assist you with:\n\n"
@@ -1263,6 +1306,7 @@ elif page == "🤖 AI Assistant":
                         input=prompt,
                         run_config=config,
                         session=memory,
+                        max_turns=25
                     )
                 )
 
