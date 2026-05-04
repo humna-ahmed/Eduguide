@@ -540,10 +540,6 @@ with st.sidebar:
         label_visibility="collapsed",
     )
 
-    st.markdown("---")
-    st.markdown(f"**Semester:** {semester}")
-    st.markdown(f"**Enrolled Courses:** {len(course_names)}")
-    st.markdown("---")
      # ADD THIS LOGOUT BUTTON
     if st.button("🚪 Logout", use_container_width=True, type="primary"):
         # Clear session state
