@@ -71,8 +71,8 @@ footer { visibility: hidden; }
 
 /* ── Sidebar Styling ── */
 [data-testid="stSidebar"] {
-    background-color: #ffffff !important;
-    border-right: 2px solid #e2e8f0 !important;
+    background: linear-gradient(180deg, #C8860A 0%, #E8A020 40%, #F5B93A 100%) !important;
+    border-right: 2px solid #C8860A !important;
 }
 
 [data-testid="stSidebar"] > div:first-child {
@@ -83,8 +83,8 @@ footer { visibility: hidden; }
     font-family: 'Poppins', sans-serif !important;
     font-size: 1.1rem !important;
     font-weight: 700 !important;
-    color: #1e293b !important;
-    border-bottom: 2px solid #e2e8f0;
+    color: #fff !important;
+    border-bottom: 2px solid rgba(255,255,255,0.4);
     padding-bottom: 0.5rem;
     margin-bottom: 0.5rem !important;
 }
@@ -92,15 +92,15 @@ footer { visibility: hidden; }
 [data-testid="stSidebar"] p,
 [data-testid="stSidebar"] span,
 [data-testid="stSidebar"] label {
-    color: #4a5568 !important;
+    color: #fff !important;
 }
 
 [data-testid="stSidebar"] strong { 
-    color: #1e293b !important; 
+    color: #fff !important; 
 }
 
 [data-testid="stSidebar"] em { 
-    color: #94a3b8 !important; 
+    color: rgba(255,255,255,0.8) !important; 
     font-size: 0.82rem !important; 
 }
 
@@ -122,15 +122,15 @@ footer { visibility: hidden; }
     font-weight: 500 !important;
     cursor: pointer !important;
     transition: background 0.15s, border-color 0.15s !important;
-    background: transparent !important;
-    color: #4a5568 !important;
+    background: rgba(255,255,255,0.15) !important;
+    color: #fff !important;
     margin-bottom: 1px !important;
 }
 
 [data-testid="stSidebar"] .stRadio label:hover {
-    background: #FFF3DC !important;
-    border-left-color: #E8A020 !important;
-    color: #C8860A !important;
+    background: rgba(255,255,255,0.3) !important;
+    border-left-color: #fff !important;
+    color: #fff !important;
     width: 100% !important;                    /* ADD THIS */
     box-sizing: border-box !important;         /* ADD THIS */
 }
@@ -539,6 +539,8 @@ with st.sidebar:
         ],
         label_visibility="collapsed",
     )
+
+    st.markdown("---")
 
      # ADD THIS LOGOUT BUTTON
     if st.button("🚪 Logout", use_container_width=True, type="primary"):

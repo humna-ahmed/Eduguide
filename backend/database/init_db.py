@@ -82,22 +82,22 @@ def setup_database():
     );
     CREATE TABLE IF NOT EXISTS quizzes (
         quiz_id INTEGER PRIMARY KEY AUTOINCREMENT, student_id INTEGER, course_id INTEGER, 
-        quiz_name TEXT, marks_obtained REAL, max_marks REAL, semester INTEGER DEFAULT 4,
+        quiz_name TEXT, marks_obtained REAL, max_marks REAL, semester INTEGER DEFAULT 1,
         FOREIGN KEY(student_id) REFERENCES students(student_id), FOREIGN KEY(course_id) REFERENCES courses(course_id)
     );
     CREATE TABLE IF NOT EXISTS assignments (
         assignment_id INTEGER PRIMARY KEY AUTOINCREMENT, student_id INTEGER, course_id INTEGER, 
-        assignment_name TEXT, marks_obtained REAL, max_marks REAL, semester INTEGER DEFAULT 4,
+        assignment_name TEXT, marks_obtained REAL, max_marks REAL, semester INTEGER DEFAULT 1,
         FOREIGN KEY(student_id) REFERENCES students(student_id), FOREIGN KEY(course_id) REFERENCES courses(course_id)
     );
     CREATE TABLE IF NOT EXISTS marks (
         mark_id INTEGER PRIMARY KEY AUTOINCREMENT, student_id INTEGER, course_id INTEGER, 
-        midterm REAL, final REAL, sessional REAL, semester INTEGER DEFAULT 4,
+        midterm REAL, final REAL, sessional REAL, semester INTEGER DEFAULT 1,
         FOREIGN KEY(student_id) REFERENCES students(student_id), FOREIGN KEY(course_id) REFERENCES courses(course_id)
     );
     CREATE TABLE IF NOT EXISTS attendance (
         attendance_id INTEGER PRIMARY KEY AUTOINCREMENT, student_id INTEGER, course_id INTEGER, 
-        classes_attended INTEGER, total_classes INTEGER, semester INTEGER DEFAULT 4,
+        classes_attended INTEGER, total_classes INTEGER, semester INTEGER DEFAULT 1,
         FOREIGN KEY(student_id) REFERENCES students(student_id), FOREIGN KEY(course_id) REFERENCES courses(course_id)
     );
     CREATE TABLE IF NOT EXISTS sessions (
@@ -157,10 +157,10 @@ def run_migration():
     password_hash = bcrypt.hashpw("1234".encode(), bcrypt.gensalt())
     for i, name in enumerate(STUDENT_NAMES, 1):
         reg = f"2024-CS-{i:03d}"
-        cur.execute("INSERT OR IGNORE INTO students (registration_no, name, password_hash, semester, department) VALUES (?,?,?,4,'CS')",
+        cur.execute("INSERT OR IGNORE INTO students (registration_no, name, password_hash, semester, department) VALUES (?,?,?,1,'CS')",
                     (reg, name, password_hash))
     
-    cur.execute("SELECT student_id, name FROM students WHERE semester=4")
+    cur.execute("SELECT student_id, name FROM students WHERE semester=1")
     students = cur.fetchall()
 
     # --- STEP 4: SEEDING MARKS (Sems 1-4) ---
@@ -217,14 +217,14 @@ def run_migration():
             sess = round(sum(qs) + sum(asgn) + mid, 1)
 
             for i, val in enumerate(qs, 1):
-                cur.execute("INSERT INTO quizzes (student_id, course_id, quiz_name, marks_obtained, max_marks, semester) VALUES (?,?,?,?,2.5,4)", (sid, cid, f"Quiz {i}", val))
+                cur.execute("INSERT INTO quizzes (student_id, course_id, quiz_name, marks_obtained, max_marks, semester) VALUES (?,?,?,?,2.5,1)", (sid, cid, f"Quiz {i}", val))
             for i, val in enumerate(asgn, 1):
-                cur.execute("INSERT INTO assignments (student_id, course_id, assignment_name, marks_obtained, max_marks, semester) VALUES (?,?,?,?,5.0,4)", (sid, cid, f"Assignment {i}", val))
+                cur.execute("INSERT INTO assignments (student_id, course_id, assignment_name, marks_obtained, max_marks, semester) VALUES (?,?,?,?,5.0,1)", (sid, cid, f"Assignment {i}", val))
             
-            cur.execute("INSERT INTO marks (student_id, course_id, midterm, final, sessional, semester) VALUES (?,?,?,?,?,4)", (sid, cid, mid, final, sess))
+            cur.execute("INSERT INTO marks (student_id, course_id, midterm, final, sessional, semester) VALUES (?,?,?,?,?,1)", (sid, cid, mid, final, sess))
             
             att = random.randint(22, 30) if profile in ["Excellent", "Good"] else random.randint(15, 25)
-            cur.execute("INSERT INTO attendance (student_id, course_id, classes_attended, total_classes, semester) VALUES (?,?,?,30,4)", (sid, cid, att))
+            cur.execute("INSERT INTO attendance (student_id, course_id, classes_attended, total_classes, semester) VALUES (?,?,?,30,1)", (sid, cid, att))
 
     conn.commit()
     print("✅ Database successfully generated with strictly consistent historical data.")

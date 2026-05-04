@@ -21,7 +21,7 @@
         }
 
         body {
-            background: linear-gradient(135deg, #1e3a8a 0%, #1e40af 100%);
+            background: #f8fafc;
             display: flex;
             align-items: center;
             justify-content: center;
@@ -70,7 +70,7 @@
             left: 0;
             right: 0;
             height: 4px;
-            background: linear-gradient(90deg, #3b82f6 0%, #2563eb 33%, #1d4ed8 66%, #1e40af 100%);
+            background: linear-gradient(90deg, #C8860A 0%, #E8A020 50%, #F5B93A 100%);
         }
 
         /* Header */
@@ -83,7 +83,7 @@
             font-size: 48px;
             margin-bottom: 20px;
             display: inline-block;
-            background: linear-gradient(135deg, #3b82f6 0%, #1d4ed8 100%);
+            background: linear-gradient(135deg, #C8860A 0%, #E8A020 100%);
             -webkit-background-clip: text;
             -webkit-text-fill-color: transparent;
             background-clip: text;
@@ -138,9 +138,9 @@
 
         .input-group input:focus {
             outline: none;
-            border-color: #3b82f6;
+            border-color: #E8A020;
             background: white;
-            box-shadow: 0 0 0 4px rgba(59, 130, 246, 0.1);
+            box-shadow: 0 0 0 4px rgba(232, 160, 32, 0.15);
             transform: translateY(-1px);
         }
 
@@ -152,7 +152,7 @@
         /* Button */
         .login-btn {
             width: 100%;
-            background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%);
+            background: linear-gradient(135deg, #C8860A 0%, #E8A020 100%);
             color: white;
             border: none;
             border-radius: 10px;
@@ -169,7 +169,8 @@
 
         .login-btn:hover:not(:disabled) {
             transform: translateY(-2px);
-            box-shadow: 0 8px 20px rgba(59, 130, 246, 0.3);
+            box-shadow: 0 8px 20px rgba(200, 134, 10, 0.4);
+
         }
 
         .login-btn:active:not(:disabled) {
@@ -316,12 +317,12 @@
 
         /* Focus states for accessibility */
         .login-btn:focus-visible {
-            outline: 2px solid #3b82f6;
+            outline: 2px solid #E8A020;
             outline-offset: 2px;
         }
 
         input:focus-visible {
-            outline: 2px solid #3b82f6;
+            outline: 2px solid #E8A020;
             outline-offset: 2px;
         }
 
@@ -502,7 +503,7 @@ document.addEventListener('DOMContentLoaded', function() {
     inputs.forEach(input => {
         input.addEventListener('input', function() {
             if (this.value.trim() !== '') {
-                this.style.borderColor = '#3b82f6';
+                this.style.borderColor = '#E8A020';
                 this.style.backgroundColor = '#ffffff';
             } else {
                 this.style.borderColor = '#e2e8f0';
