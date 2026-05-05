@@ -915,184 +915,81 @@ def build_tools(student_id: int, db: sqlite3.Connection):
             f"• Study Style: {style}"
         )
         
+    
     @function_tool
     def create_study_plan(hours_per_day: int, days: int, style: str) -> str:
         """
-        Generate a detailed day-by-day study plan for a single course.
-        Covers ALL course topics but gives extra focus to weak topics.
+        Fetches course data and returns it as JSON.
+        The LLM will use this data to build the actual study plan.
 
         Args:
             hours_per_day: Hours per day (1-6)
             days: Number of days (1-30)
             style: 'concept', 'practice', or 'mixed'
         """
-        weak_topics   = planner_data.get("weak_topics", [])
-        course_name   = planner_data.get("target_course", "")
+        weak_topics = planner_data.get("weak_topics", [])
+        course_name = planner_data.get("target_course", "")
 
         if not weak_topics:
             return "❌ No weak topics found. Please select your weak topics first."
-
-        style         = style.lower().strip()
-        if style not in ("concept", "practice", "mixed"):
-            style = "mixed"
-        hours_per_day = max(1, min(6, int(hours_per_day)))
-        days          = max(1, min(30, int(days)))
     
-        # ── Fetch ALL topics from DB ───────────────────────────
+        # --- Your existing DB fetch logic (keep this as is) ---
         all_topics = []
-        if course_name:
-            try:
-                current_dir = os.path.dirname(os.path.abspath(__file__))
-                backend_dir = os.path.dirname(current_dir)
-                db_path     = os.path.join(backend_dir, "database", "lms.db")
+        try:
+            current_dir = os.path.dirname(os.path.abspath(__file__))
+            backend_dir = os.path.dirname(current_dir)
+            db_path     = os.path.join(backend_dir, "database", "lms.db")
     
-                conn = sqlite3.connect(db_path)
-                cur  = conn.cursor()
-    
+            conn = sqlite3.connect(db_path)
+            cur  = conn.cursor()
+            cur.execute(
+                "SELECT course_id FROM courses WHERE LOWER(course_name) = LOWER(?)",
+                (course_name.strip(),)
+            )
+            row = cur.fetchone()
+            if row:
                 cur.execute(
-                    "SELECT course_id FROM courses WHERE LOWER(course_name) = LOWER(?)",
-                    (course_name.strip(),)
+                    "SELECT topic_name FROM course_outlines "
+                    "WHERE course_id = ? ORDER BY topic_number",
+                    (row[0],)
                 )
-                row = cur.fetchone()
-                if not row:
-                    cur.execute(
-                        "SELECT course_id FROM courses WHERE LOWER(course_name) LIKE LOWER(?)",
-                        (f"%{course_name.strip()}%",)
-                    )
-                    row = cur.fetchone()
+                all_topics = [r[0] for r in cur.fetchall()]
+            conn.close()
+        except Exception:
+            pass
     
-                if row:
-                    cur.execute(
-                        "SELECT topic_name FROM course_outlines "
-                        "WHERE course_id = ? ORDER BY topic_number",
-                        (row[0],)
-                    )
-                    all_topics = [r[0] for r in cur.fetchall()]
-    
-                conn.close()
-            except Exception:
-                pass
-    
-        # Fallback: if no DB topics, use weak topics only
         if not all_topics:
             all_topics = weak_topics
     
-        # ── Build topic schedule ───────────────────────────────
-        # Each slot gets a topic. Weak topics appear more frequently.
-        # Strategy: build a weighted pool then cycle through it.
-        weak_set = set(weak_topics)
-    
-        # Weak topics appear 3x, other topics appear 1x
-        weighted_pool = []
-        for t in all_topics:
-            if t in weak_set:
-                weighted_pool.extend([t, t, t])  # 3x weight
-            else:
-                weighted_pool.append(t)           # 1x weight
-    
-        # ── Time slots ─────────────────────────────────────────
-        all_slots = [
-            "🌅 Morning       (9:00 AM  - 10:00 AM)",
-            "📚 Late Morning  (11:00 AM - 12:00 PM)",
-            "🕌 After Dhuhr   (1:00 PM  - 2:00 PM)",
-            "☕ After Asr     (4:00 PM  - 5:00 PM)",
-            "🌙 After Maghrib (6:00 PM  - 7:00 PM)",
-            "⭐ After Isha    (8:00 PM  - 9:00 PM)",
-        ]
-        daily_slots = all_slots[:min(hours_per_day, len(all_slots))]
-    
-        # ── Build plan ─────────────────────────────────────────
-        lines = []
-        lines.append(f"📚 STUDY PLAN — {course_name.upper() if course_name else 'YOUR COURSE'}")
-        lines.append(f"🎯 Weak Topics (Extra Focus):")
-        for wt in weak_topics:
-            lines.append(f"   ⚠️  {wt}")
-        lines.append(f"⏰ Daily Study : {hours_per_day} hour(s)/day for {days} day(s)")
-        lines.append(f"🎨 Study Style : {style.upper()}")
-        lines.append(f"📖 Total Topics: {len(all_topics)} topics covered")
-        lines.append("")
-    
-        slot_counter = 0  # global counter across all days to cycle weighted_pool
-    
-        for day in range(1, days + 1):
-            lines.append(f"{'─' * 65}")
-            lines.append(f"📅 DAY {day}")
-            lines.append(f"{'─' * 65}")
-    
-            for slot_idx, slot in enumerate(daily_slots):
-                topic      = weighted_pool[slot_counter % len(weighted_pool)]
-                slot_counter += 1
-                is_weak    = topic in weak_set
-                weak_label = " ⚠️ WEAK TOPIC" if is_weak else ""
-    
-                if style == "concept":
-                    activity = f"📖 Study: '{topic}'{weak_label}"
-                    details  = (
-                        "   • Read lecture notes\n"
-                        "   • Watch explanation videos\n"
-                        "   • Create concept maps"
-                    )
-                elif style == "practice":
-                    activity = f"✍️ Practice: '{topic}'{weak_label}"
-                    details  = (
-                        "   • Solve exercises\n"
-                        "   • Attempt past papers\n"
-                        "   • Online quizzes"
-                    )
-                else:
-                    if slot_idx % 2 == 0:
-                        activity = f"📖 Learn: '{topic}'{weak_label}"
-                        details  = (
-                            "   • Understand fundamentals\n"
-                            "   • Study examples and definitions"
-                        )
-                    else:
-                        activity = f"✍️ Apply: '{topic}'{weak_label}"
-                        details  = (
-                            "   • Work through examples\n"
-                            "   • Practice exercises"
-                        )
-    
-                # YouTube search with course name + topic name
-                search_query = f"{topic} in {course_name}".replace(" ", "+")
-                yt = f"https://www.youtube.com/results?search_query={search_query}"
-    
-                lines.append(f"\n{slot}")
-                lines.append(f"   → {activity}")
-                lines.append(details)
-                lines.append(f"   📺 Watch: {yt}")
-    
-            lines.append(f"\n🔄 End of Day {day} Review")
-            lines.append("   • Summarise what you covered today")
-            lines.append("   • Spend extra 15 min revisiting any weak topic")
-            lines.append("   • Note anything unclear for tomorrow")
-            lines.append("")
-    
-        lines.append("💡 STUDY TIPS")
-        lines.append("• ⚠️ Weak topics appear 3x more often — don't skip them")
-        lines.append("• All topics are covered — not just weak ones")
-        lines.append("• Take 10-min breaks between sessions")
-        lines.append("• Stay hydrated and get enough sleep")
-        lines.append("• Consistency beats cramming every time")
-        lines.append("\n🎯 You can do this! Stay consistent and good luck! 🌟")
-    
-        return "\n".join(lines)
+        # --- Return raw data, nothing else ---
+        return json.dumps({
+            "course":        course_name,
+            "all_topics":    all_topics,
+            "weak_topics":   weak_topics,
+            "hours_per_day": hours_per_day,
+            "days":          days,
+            "style":         style,
+            "total_slots":   hours_per_day * days
+        }, indent=2)
     
     @function_tool
     async def get_all_courses_priorities() -> str:
-        """Show all courses ranked by urgency based on predicted grade and credit hours."""
+        """
+        Fetches and ranks all courses by urgency.
+        Returns raw JSON for the LLM to display intelligently.
+        """
         profile = await _fetch_full_student_profile(student_id, db)
-    
+
         if "error" in profile:
             return profile["error"]
-        
+
         _cached_profile["data"] = profile
-    
+
         grade_scores = {
             "F": 100, "D": 85, "D+": 80, "C-": 75, "C": 70,
             "C+": 65, "B-": 55, "B": 45, "B+": 35, "A-": 25, "A": 15,
         }
-    
+
         courses_ranked = []
         for course in profile["courses"]:
             cursor = db.cursor()
@@ -1105,58 +1002,48 @@ def build_tools(student_id: int, db: sqlite3.Connection):
             att = cursor.fetchone()
             att_pct = round((att[0] / att[1]) * 100, 1) if att and att[1] else 75
     
-            grade_score       = grade_scores.get(course["predicted_grade"], 50)
-            credit_score      = course["credit_hours"] * 10
-            att_penalty       = max(0, (75 - att_pct) * 2) if att_pct < 75 else 0
-            priority          = grade_score + credit_score + att_penalty
-            needs_rescue      = course["predicted_grade"] in ["F","D","D+","C-","C"]
+            grade_score  = grade_scores.get(course["predicted_grade"], 50)
+            credit_score = course["credit_hours"] * 10
+            att_penalty  = max(0, (75 - att_pct) * 2) if att_pct < 75 else 0
+            priority     = grade_score + credit_score + att_penalty
+            needs_rescue = course["predicted_grade"] in ["F", "D", "D+", "C-", "C"]
     
             courses_ranked.append({
-                "name":         course["name"],
-                "grade":        course["predicted_grade"],
-                "percentage":   course["percentage"],
-                "credit_hours": course["credit_hours"],
-                "priority":     priority,
-                "needs_rescue": needs_rescue,
-                "att_pct":      att_pct,
+                "name":            course["name"],
+                "predicted_grade": course["predicted_grade"],
+                "percentage":      course["percentage"],
+                "credit_hours":    course["credit_hours"],
+                "attendance_pct":  att_pct,
+                "priority_score":  priority,
+                "needs_rescue":    needs_rescue,
+                "attendance_warning": att_pct < 75,
             })
-
-        courses_ranked.sort(key=lambda x: x["priority"], reverse=True)
-
-        lines = ["📊 **COURSE PRIORITY RANKING**\n"]
-        lines.append(f"{'#':<3} {'Course':<38} {'Grade':<6} {'%':<7} {'CH':<4} {'Urgency'}")
-        lines.append("-" * 70)
     
-        for i, c in enumerate(courses_ranked, 1):
-            urgency = "🔴 CRITICAL" if c["needs_rescue"] else "🟡 IMPROVE"
-            att_warn = " ⚠️" if c["att_pct"] < 75 else ""
-            lines.append(
-                f"{i:<3} {c['name']:<38} {c['grade']:<6} "
-                f"{c['percentage']:<7} {c['credit_hours']:<4} {urgency}{att_warn}"
-            )
+        courses_ranked.sort(key=lambda x: x["priority_score"], reverse=True)
     
-        top = courses_ranked[0]
-        lines.append(f"\n🎯 Most Urgent: {top['name']} (Grade: {top['grade']}, {top['percentage']}%)")
-        lines.append("\nProvide your study preferences to generate a rescue plan.")
-        lines.append("Format: hours=3, days=5, style=mixed")
-    
-        return "\n".join(lines)
+        # Return raw data — LLM builds the display
+        return json.dumps({
+            "ranked_courses": courses_ranked,
+            "most_urgent":    courses_ranked[0] if courses_ranked else None,
+            "critical_count": sum(1 for c in courses_ranked if c["needs_rescue"]),
+            "total_courses":  len(courses_ranked),
+        }, indent=2)
 
     @function_tool
     async def create_rescue_plan_all(hours_per_day: int, days: int, style: str) -> str:
         """
-        Generate a priority-based rescue plan for ALL courses.
-        Critical courses get more time slots. Non-critical courses still appear.
-
+        Builds weighted course schedule data for ALL courses.
+        Returns raw JSON for the LLM to generate the rescue plan.
+    
         Args:
-            hours_per_day: Hours per day (1-6)
+            hours_per_day: Hours per day (1-8)
             days: Number of days (1-30)
             style: 'concept', 'practice', or 'mixed'
         """
         style         = style.lower().strip()
         if style not in ("concept", "practice", "mixed"):
             style = "mixed"
-        hours_per_day = max(1, min(6, int(hours_per_day)))
+        hours_per_day = max(1, min(8, int(hours_per_day)))
         days          = max(1, min(30, int(days)))
     
         # Use cached profile
@@ -1193,122 +1080,61 @@ def build_tools(student_id: int, db: sqlite3.Connection):
             needs_rescue = course["predicted_grade"] in ["F", "D", "D+", "C-", "C"]
     
             courses_ranked.append({
-                "name":         course["name"],
-                "grade":        course["predicted_grade"],
-                "percentage":   course["percentage"],
-                "credit_hours": course["credit_hours"],
-                "priority":     priority,
-                "needs_rescue": needs_rescue,
+                "name":               course["name"],
+                "predicted_grade":    course["predicted_grade"],
+                "percentage":         course["percentage"],
+                "credit_hours":       course["credit_hours"],
+                "attendance_pct":     att_pct,
+                "priority_score":     priority,
+                "needs_rescue":       needs_rescue,
+                "attendance_warning": att_pct < 75,
+                "slot_weight":        3 if needs_rescue else 1,
             })
-    
-        courses_ranked.sort(key=lambda x: x["priority"], reverse=True)
-    
-        # ── Build weighted pool ────────────────────────────────
-        # Critical courses get 3 slots, non-critical get 1 slot
-        # This ensures ALL courses appear but urgent ones dominate
-        weighted_courses = []
+
+        courses_ranked.sort(key=lambda x: x["priority_score"], reverse=True)
+
+        # Build weighted pool — Python handles the math
+        weighted_pool = []
         for c in courses_ranked:
-            if c["needs_rescue"]:
-                weighted_courses.extend([c, c, c])   # 3x
-            else:
-                weighted_courses.append(c)            # 1x
+            weight = 3 if c["needs_rescue"] else 1
+            weighted_pool.extend([c["name"]] * weight)
     
-        # ── Time slots ─────────────────────────────────────────
-        all_slots = [
-            "🌅 Morning       (8:00 AM  - 9:00 AM)",
-            "📚 Late Morning  (10:00 AM - 11:00 AM)",
-            "🕌 After Dhuhr   (1:00 PM  - 2:00 PM)",
-            "☕ After Asr     (4:00 PM  - 5:00 PM)",
-            "🌙 After Maghrib (6:00 PM  - 7:00 PM)",
-            "⭐ After Isha    (8:00 PM  - 9:00 PM)",
-        ]
-        daily_slots = all_slots[:min(hours_per_day, len(all_slots))]
-    
-        # ── Build plan ─────────────────────────────────────────
-        lines = []
-        lines.append("=" * 75)
-        lines.append("🚨 RESCUE PLAN — ALL COURSES")
-        lines.append("=" * 75)
-        lines.append(
-            f"⏰ {hours_per_day} hour(s)/day  |  "
-            f"{days} days  |  Style: {style.upper()}"
-        )
-        lines.append("")
-        lines.append("📊 Priority Order (🔴 = 3x slots, 🟡 = 1x slot):")
-        for i, c in enumerate(courses_ranked, 1):
-            flag  = "🔴" if c["needs_rescue"] else "🟡"
-            slots = "3x slots/day" if c["needs_rescue"] else "1x slot/day"
-            lines.append(
-                f"   {i}. {flag} {c['name']} "
-                f"— {c['grade']} ({c['percentage']}%)  [{slots}]"
-            )
-        lines.append("")
-    
-        slot_counter = 0  # global across all days
-    
-        for day in range(1, days + 1):
-            lines.append(f"{'─' * 75}")
-            lines.append(f"📅 DAY {day}")
-            lines.append(f"{'─' * 75}")
-    
-            for slot_idx, slot in enumerate(daily_slots):
-                course     = weighted_courses[slot_counter % len(weighted_courses)]
-                slot_counter += 1
-                flag       = "🔴" if course["needs_rescue"] else "🟡"
-    
-                if style == "concept":
-                    activity = f"📖 Study concepts: {course['name']} {flag}"
-                    details  = (
-                        "   • Review lecture notes\n"
-                        "   • Watch explanation videos\n"
-                        "   • Create concept summaries"
-                    )
-                elif style == "practice":
-                    activity = f"✍️ Practice: {course['name']} {flag}"
-                    details  = (
-                        "   • Solve past papers\n"
-                        "   • Take online quizzes\n"
-                        "   • Practice exercises"
-                    )
-                else:
-                    if slot_idx % 2 == 0:
-                        activity = f"📖 Learn: {course['name']} {flag}"
-                        details  = (
-                            "   • Study theory and definitions\n"
-                            "   • Understand core concepts"
-                        )
-                    else:
-                        activity = f"✍️ Apply: {course['name']} {flag}"
-                        details  = (
-                            "   • Solve problems\n"
-                            "   • Self-test with questions"
-                        )
-    
-                yt = (
-                    f"https://www.youtube.com/results?"
-                    f"search_query={course['name'].replace(' ', '+')}+lecture+tutorial"
-                )
-                lines.append(f"\n{slot}")
-                lines.append(f"   → {activity}")
-                lines.append(details)
-                lines.append(f"   📺 Watch: {yt}")
-    
-            lines.append(f"\n🔄 End of Day {day} Review")
-            lines.append("   • Recap what you covered today")
-            lines.append("   • Focus extra time on 🔴 topics if needed")
-            lines.append("")
-    
-        lines.append("=" * 75)
-        lines.append("💡 RESCUE TIPS")
-        lines.append("=" * 75)
-        lines.append("• 🔴 CRITICAL courses get 3x more time — they need it most")
-        lines.append("• 🟡 courses still appear — don't neglect them")
-        lines.append("• Use YouTube links — visual learning helps retention")
-        lines.append("• Attend ALL remaining classes — every mark counts")
-        lines.append("• Form study groups for challenging subjects")
-        lines.append("\n🎯 You can turn this around! Start today! 💪")
-    
-        return "\n".join(lines)
+        # Pre-compute slot assignments across all days
+        # LLM doesn't need to do the cycling math — give it the schedule
+        total_slots = hours_per_day * days
+        schedule = []
+        for i in range(total_slots):
+            course_name = weighted_pool[i % len(weighted_pool)]
+            course_data = next(c for c in courses_ranked if c["name"] == course_name)
+            schedule.append({
+                "day":         (i // hours_per_day) + 1,
+                "slot_index":  i % hours_per_day,
+                "course":      course_name,
+                "needs_rescue": course_data["needs_rescue"],
+                "grade":       course_data["predicted_grade"],
+                "percentage":  course_data["percentage"],
+            })
+        
+        # Return raw data — LLM builds the plan
+        return json.dumps({
+            "courses_ranked":  courses_ranked,
+            "schedule":        schedule,
+            "hours_per_day":   hours_per_day,
+            "days":            days,
+            "style":           style,
+            "total_slots":     total_slots,
+            "critical_count":  sum(1 for c in courses_ranked if c["needs_rescue"]),
+            "time_slots": [
+                "🌅 Morning        9:00 AM  – 10:00 AM",
+                "📚 Late Morning   11:00 AM – 12:00 PM",
+                "🕌 After Dhuhr    1:00 PM  –  2:00 PM",
+                "🌤️ Afternoon      3:00 PM  –  4:00 PM",
+                "☕ After Asr      4:30 PM  –  5:30 PM",
+                "🌙 After Maghrib  6:30 PM  –  7:30 PM",
+                "⭐ After Isha     8:00 PM  –  9:00 PM",
+                "🌙 Late Night    10:00 PM  – 11:00 PM",
+                ][:hours_per_day],
+        }, indent=2)
             
     @function_tool
     async def get_semester_gpa() -> Dict[str, Any]:
@@ -1540,111 +1366,457 @@ YOU MUST NOT default to Calculus or any course.
         name="Planner Agent",
         model=model,
         instructions="""
-    You are a Study Planner & Rescue Agent.
+        You are a Study Planner & Rescue Agent.
 
-    ════════════════════════════════════════
-    TWO MODES
-    ════════════════════════════════════════
+        ════════════════════════════════════════
+        STATE TRACKING — READ THIS FIRST
+        ════════════════════════════════════════
+        
+        You move through steps ONE BY ONE. After each tool call succeeds (✅),
+        you advance to the next step. You NEVER go back to a previous step
+        unless a tool explicitly returned ❌.
+        
+        MODE 1 STATE MACHINE:
+          STATE A → Have not fetched topics yet        → call fetch_course_topics
+          STATE B → Topics shown, waiting for weak topics → call save_weak_topics
+          STATE C → Weak topics saved ✅, waiting for hours/days/style → call create_study_plan
+          STATE D → Plan generated → DONE
+        
+        CRITICAL STATE RULES:
+          - Once save_weak_topics returns ✅, you are in STATE C.
+          - In STATE C, the NEXT user message is ALWAYS hours/days/style.
+          - In STATE C, do NOT call save_weak_topics again under any circumstance.
+          - In STATE C, ONLY call create_study_plan.
+          - You CANNOT go back from STATE C to STATE B unless user explicitly
+            says "let me change my weak topics".
+        
+        ════════════════════════════════════════
+        TWO MODES — READ CAREFULLY
+        ════════════════════════════════════════
+        
+        MODE 1 — SINGLE COURSE : user mentions a specific course name
+        MODE 2 — ALL COURSES   : user says "all", "everything", "rescue plan", "all courses"
+        
+        Identify the mode from the FIRST message. Do not mix them up.
+        
+        ════════════════════════════════════════════════════════════════
+        MODE 1 — SINGLE COURSE FLOW
+        ════════════════════════════════════════════════════════════════
+        
+        TOOL ORDER: fetch_course_topics → save_weak_topics → create_study_plan
+        ⛔ DO NOT call save_user_preferences in Mode 1
+        ⛔ DO NOT call create_rescue_plan_all in Mode 1
+        
+        ──────────────────────────────────────────────────────────────
+        STEP 1 — Fetch Topics (STATE A)
+        ──────────────────────────────────────────────────────────────
+        If user already named the course in their first message, use that name.
+        DO NOT ask "which course?" if the course name is already known.
+        
+        Call: fetch_course_topics(course_name="[course name]")
+        Display the numbered topic list.
+        Ask: "Which topics are you weak in? Enter numbers or names."
+        → You are now in STATE B.
+        
+        ──────────────────────────────────────────────────────────────
+        STEP 2 — Save Weak Topics (STATE B)
+        ──────────────────────────────────────────────────────────────
+        When user replies with topic numbers or names, IMMEDIATELY call:
+          save_weak_topics(input_text="[user's exact reply]", course_name="[course name]")
+        
+        Rules:
+        - Pass the user's input EXACTLY as they typed it. Do not reformat it.
+        - Accept any format: "6 7", "1,3,5", "Deadlock, Memory Management"
+        - If save_weak_topics returns ✅ → go to STEP 3 immediately.
+          Do NOT ask for weak topics again. Do NOT say "confirmed". Just proceed.
+        - If save_weak_topics returns ❌ → show the error, ask user to re-enter.
+          Stay in STATE B.
 
-    MODE 1 — SINGLE COURSE (user names a course)
-    MODE 2 — ALL COURSES   (user says "all", "everything", "rescue plan")
+        ──────────────────────────────────────────────────────────────
+        STEP 3 — Ask Preferences (STATE C)
+        ──────────────────────────────────────────────────────────────
+        After ✅ from save_weak_topics, ask EXACTLY this:
+        
+          "✅ Weak topics saved! Let's build your plan.
+        
+           Please tell me your study preferences:
+        
+           ⏰ Hours per day  : 1–8  (each = one focused study session)
+           📅 Days           : 1–30
+           🎨 Style          : concept / practice / mixed
+        
+           💡 concept  = theory focus (notes, videos, concept maps)
+              practice = exercise focus (problems, past papers, quizzes)
+              mixed    = alternating learn & apply each session
+        
+           Example: 4 5 mixed  →  4 sessions/day, 5 days, mixed style"
+        
+        ⚠️ YOU ARE NOW IN STATE C.
+           The user's next reply is hours/days/style — NOT weak topics.
+           Do NOT call save_weak_topics again.
+        
+        ──────────────────────────────────────────────────────────────
+        STEP 4 — Generate the Plan (STATE C → STATE D)
+        ──────────────────────────────────────────────────────────────
+        When user replies with hours, days, style, IMMEDIATELY call:
+          create_study_plan(hours_per_day=X, days=Y, style="Z")
+        
+        Parsing rules:
+          "5 5 mixed"                    → hours_per_day=5, days=5,  style="mixed"
+          "4 6 concept"                  → hours_per_day=4, days=6,  style="concept"
+          "3 7 practice"                 → hours_per_day=3, days=7,  style="practice"
+          "hours=2, days=10, style=mixed"→ hours_per_day=2, days=10, style="mixed"
+          Missing style                  → default to "mixed"
+          Missing days                   → ask only for the missing value
+        
+          Hours cap  : maximum 8
+          Days cap   : maximum 30
+        
+          If user enters hours > 8, say before generating:
+            "That's a lot! I've capped it at 8 sessions — already a very full day! 💪
+             If you need more coverage, consider adding extra days instead —
+             your brain retains more with rest between sessions."
+          Then proceed with hours_per_day=8.
+        
+          If user enters days > 30, cap at 30 and say:
+            "I've capped it at 30 days — that's a solid month-long plan! 📅"
+        
+        ──────────────────────────────────────────────────────────────
+        STEP 5 — Build the Plan from JSON (STATE D)
+        ──────────────────────────────────────────────────────────────
+        ⚠️ WEAK TOPICS — STRICT RULE:
+          - The ONLY weak topics are those returned in the JSON field "weak_topics"
+          - Do NOT add, infer, assume, or guess any additional weak topics
+          - Do NOT mark a topic as [⚠️ WEAK TOPIC] unless it appears EXACTLY in "weak_topics"
+          - If a topic is not in "weak_topics", treat it as a normal topic — no warning label
+          - The weighted pool: add each weak_topic 3× and each non-weak topic 1×
+            ONLY for topics actually in "weak_topics"
+        
+        create_study_plan returns raw JSON data. YOU generate the actual plan.
+        Do NOT print the JSON. Think and build intelligently using the rules below.
+        
+        THE JSON GIVES YOU:
+          course        → course name
+          all_topics    → every topic in order
+          weak_topics   → topics the student struggles with
+          hours_per_day → sessions per day (1–8)
+          days          → number of days
+          style         → concept / practice / mixed
+          total_slots   → hours_per_day × days
+        
+        TIME SLOTS — use in order up to hours_per_day:
+          🌅 Morning        9:00 AM  – 10:00 AM
+          📚 Late Morning   11:00 AM – 12:00 PM
+          🕌 After Dhuhr    1:00 PM  –  2:00 PM
+          🌤️ Afternoon      3:00 PM  –  4:00 PM
+          ☕ After Asr      4:30 PM  –  5:30 PM
+          🌙 After Maghrib  6:30 PM  –  7:30 PM
+          ⭐ After Isha     8:00 PM  –  9:00 PM
+          🌙 Late Night    10:00 PM  – 11:00 PM
+        
+        HOW TO DISTRIBUTE TOPICS:
+          - Build a weighted pool:
+              Each weak topic  → add 3 times
+              Each other topic → add 1 time
+          - Cycle through this pool across all total_slots
+          - CLUSTER related topics together when possible
+            Example: "Deadlock I" and "Deadlock II" → same or consecutive days
+          - ADAPT to number of days:
+              1–3 days  → focus heavily on weak topics, briefly touch others
+              4–7 days  → full coverage, strong focus on weak topics
+              8–30 days → full coverage, revisit weak topics with increasing
+                          difficulty: understand → apply → master
+        
+        STYLE RULES:
+          concept  → every session is theory-focused:
+                     read notes, watch explanations, build concept maps
+          practice → every session is exercise-focused:
+                     solve problems, past papers, online quizzes
+          mixed    → alternate each session:
+                     odd slots  → 📖 Learn (theory, understanding)
+                     even slots → ✍️ Apply (examples, exercises)
+                     for weak topics add: "⚠️ Pay close attention — weak area"
+        
+        YOUTUBE LINKS — one per session:
+          Format: https://www.youtube.com/results?search_query={topic}+{course}
+          Replace spaces with +
+          Example: "Deadlock and Starvation" in "Operating Systems"
+          → https://www.youtube.com/results?search_query=Deadlock+and+Starvation+Operating+Systems
+        
+        TOPIC-SPECIFIC STUDY TIPS — when a weak topic appears, add ONE real tip:
+          "Deadlock"            → "Draw the resource allocation graph first"
+          "Normalization"       → "Practice converting to 3NF step by step"
+          "Process Scheduling"  → "Calculate Gantt charts by hand for each algorithm"
+          "Memory Management"   → "Trace through a page table with a small example"
+          "Synchronization"     → "Trace mutex/semaphore values step by step"
+          "Transactions"        → "Write out ACID properties with a real example"
+          For any other topic   → use your knowledge to give a real, specific tip
+        
+        END OF DAY REVIEW — vary it each day, do NOT repeat the same bullets:
+          Day 1  → "What surprised you today? Write it down."
+          Day 2  → "Can you explain today's hardest topic out loud?"
+          Day 3  → "Which session felt weakest? Revisit it for 10 minutes."
+          Day 4+ → Continue varying — ask reflective, specific questions
+        
+        MOTIVATIONAL MESSAGES — personalize based on context:
+          Many weak topics (4+) → extra supportive, break into small wins
+          Few weak topics (1-2) → confident tone, "You're almost there!"
+          Short plan (1–3 days) → urgency, "Let's make every hour count"
+          Long plan (10+ days)  → marathon tone, "Consistency is your superpower"
 
-    ════════════════════════════════════════
-    MODE 1 — SINGLE COURSE FLOW
-    ════════════════════════════════════════
+        PLAN FORMAT — write it like a real study guide, not a template:
 
-    STEP 1: Call get_course_prediction(course_name)
-    STEP 2: Call fetch_course_topics(course_name)
-            Show the numbered topic list to the student.
-    STEP 3: Ask exactly this:
-            "Which topics are you weak in? Enter numbers or names, separated by commas or spaces."
-            Pass exactly what the user typed. Do not modify it.
-    STEP 4: Call save_weak_topics(input_text=user_input, course_name=the_course_name)
-            Pass the course name so topic numbers resolve to actual topic names.
-            Example: save_weak_topics(input_text="12, 7, 8", course_name="Operating Systems")
-    STEP 5: Ask: "How many hours per day, for how many days, and what style?
-            (concept / practice / mixed)
-            Example: hours=3, days=5, style=mixed"
-    STEP 6: Extract hours, days, style from what the student types.
-            Then call create_study_plan(hours_per_day=X, days=Y, style=Z)
-            with the extracted values as typed parameters.
+          📚 STUDY PLAN — {COURSE NAME}
+          ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+          ⚠️  Weak Areas   : {weak topic 1}, {weak topic 2}
+              These appear 3× more — give them your full focus.
+          ⏰  Daily Load   : {hours} session(s)/day × {days} days = {total} sessions
+          🎨  Style        : {STYLE}
+          📖  Topics       : {count} topics covered
+          ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+        
+          📅 DAY 1 — [Give the day a short thematic title e.g. "Building Your Foundation"]
+        
+          🌅 9:00 AM | 📖 Learn: {topic}  [⚠️ WEAK TOPIC if applicable]
+                     [One sentence on what to focus on for this topic]
+                     💡 Tip: [specific tip if weak topic]
+                     📺 {youtube link}
+        
+          📚 11:00 AM | ✍️ Apply: {topic}
+                     [One sentence on what exercise/problem to attempt]
+                     📺 {youtube link}
+        
+          ... and so on for all sessions
+        
+          🔄 Day 1 Review
+                [Varied reflective question — not the same every day]
+        
+          [Repeat for all days]
+        
+          ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+          💡 FINAL TIPS
+          ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+          [3–4 personalized tips based on their specific weak topics and plan length]
+          [End with a personalized motivational message based on context]
+        
+        ──────────────────────────────────────────────────────────────
+        MODE 1 — CORRECT EXAMPLE
+        ──────────────────────────────────────────────────────────────
+                
+        User:  "generate a study plan for operating systems"
+        Agent: [STATE A → calls fetch_course_topics("operating systems")]
+        Agent: "Here are the topics for Operating Systems:
+                1. An Overview of Computer System
+                2. ...
+                Which topics are you weak in? Enter numbers or names."
+        
+        User:  "6 7"
+        Agent: [STATE B → calls save_weak_topics("6 7", "operating systems")]
+               [Tool returns ✅ → NOW IN STATE C]
+        Agent: "✅ Weak topics saved! Let's build your plan.
+                ⏰ Hours per day : 1–8 ... [full preferences question]"
+        
+        User:  "5 5 mixed"
+        Agent: [STATE C → calls create_study_plan(hours_per_day=5, days=5, style="mixed")]
+               [Tool returns JSON → NOW IN STATE D]
+        Agent: [builds and displays full intelligent plan from JSON]
+        
+        ──────────────────────────────────────────────────────────────
+        MODE 1 — NEVER DO THESE
+        ──────────────────────────────────────────────────────────────
+        ❌ NEVER ask "which course?" if the user already named it
+        ❌ NEVER call save_weak_topics after it returned ✅
+        ❌ NEVER treat "5 5 mixed" as weak topic input
+        ❌ NEVER call save_user_preferences in Mode 1
+        ❌ NEVER say "there was an issue" unless a tool returned ❌
+        ❌ NEVER print the raw JSON from create_study_plan
+        ❌ NEVER generate the same plan format every time — vary it
+        ❌ NEVER mark a topic as weak unless it is in the "weak_topics" field of the JSON
+        ❌ NEVER infer weak topics from topic names or context
+        
+        ════════════════════════════════════════════════════════════════
+        MODE 2 — ALL COURSES FLOW
+        ════════════════════════════════════════════════════════════════
 
-            Examples of how to extract:
-            "4 5 concept"          → hours_per_day=4, days=5, style="concept"
-            "hours=3, days=5"      → hours_per_day=3, days=5, style="mixed"
-            "3, 5, mixed"          → hours_per_day=3, days=5, style="mixed"
-            "4 hours 7 days mixed" → hours_per_day=4, days=7, style="mixed"
+        TOOL ORDER: get_all_courses_priorities → save_user_preferences → create_rescue_plan_all
+        ⛔ DO NOT call save_weak_topics in Mode 2
+        ⛔ DO NOT call create_study_plan in Mode 2
 
-            First number = hours_per_day
-            Second number = days
-            Any style word = style (default "mixed" if not mentioned)
+        MODE 2 STATE MACHINE:
+          STATE A → call get_all_courses_priorities
+          STATE B → priorities shown, waiting for preferences → call save_user_preferences
+          STATE C → preferences saved ✅ → immediately call create_rescue_plan_all
+          STATE D → plan JSON received → YOU build the rescue plan → DONE
+        
+        ──────────────────────────────────────────────────────────────
+        STEP 1 — Fetch & Display Priorities (STATE A)
+        ──────────────────────────────────────────────────────────────
+        Call: get_all_courses_priorities()
 
-    STEP 7: Display the full plan output exactly as returned by the tool.
+        Display the results as PLAIN TEXT — do NOT use markdown tables, 
+        do NOT use headers like "Course Grade % Credits" in bold.
+        Format it like this:
 
-    CRITICAL FOR MODE 1:
-    - NEVER call create_study_plan before save_weak_topics returns ✅
-    - NEVER ask for weak topics again after save_weak_topics returns ✅
-    - NEVER ask for preferences again after the student gives numbers
-    - If save_weak_topics returns ✅, move IMMEDIATELY to asking for preferences
-    - If the student gives you any two numbers, that is enough to call create_study_plan
-    
-    ════════════════════════════════════════
-    MODE 2 — ALL COURSES FLOW
-    ════════════════════════════════════════
-    
-    STEP 1: Call get_all_courses_priorities()
-            Show the priority ranking to the student.
-    STEP 2: Ask exactly this:
-            "Please provide your study preferences.
-            Example: hours=3, days=5, style=mixed"
-    STEP 3: Call save_user_preferences(user_input)
-            If the tool returns an error, show it and ask again.
-    STEP 4: Call create_rescue_plan_all()
-    STEP 5: Display the full rescue plan.
-    
-    ════════════════════════════════════════
-    CRITICAL RULES — NEVER BREAK THESE
-    ════════════════════════════════════════
+          📊 YOUR COURSE PRIORITY RANKING
+          ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-    1. ALWAYS call save_user_preferences BEFORE calling create_study_plan
-       or create_rescue_plan_all. Never skip this step.
-    
-    2. If any tool returns a message starting with ❌, STOP and show
-       the error to the student. Ask for the correct input. Do NOT
-       call the next tool until the error is resolved.
-    
-    3. Never generate a plan from your own knowledge.
-       Always use the tools in the correct order.
-    
-    4. Never ask for weak topics in Mode 2.
-    
-    5. Accept topic input in ANY format — "1 3 5", "1,3,5",
-       "Normalization, Transactions" — pass it all directly to save_weak_topics.
-    
-    6. Accept preferences in ANY format — "3 5 mixed", "hours=3, days=5, style=mixed",
-       "3 hours, 5 days" — pass it all directly to save_user_preferences.
+          🔴 CRITICAL — Need immediate attention (3× more study time)
 
-    ════════════════════════════════════════
-    WHAT CAUSED MAX TURNS ERROR (avoid this)
-    ════════════════════════════════════════
+             1. Operating Systems          F    42%   3 hrs
+             2. Database Systems           D    51%   3 hrs
 
-    ❌ Calling create_study_plan before save_user_preferences
-    ❌ Retrying a failed tool call without fixing the input
-    ❌ Skipping save_weak_topics and going straight to preferences
-    ❌ Calling create_rescue_plan_all for single course
-    ❌ Calling create_study_plan for all courses
-    
-    ════════════════════════════════════════
-    TONE
-    ════════════════════════════════════════
-    Be encouraging, clear, and step-by-step.
-    Never overwhelm the student with too many questions at once.
-    One question per message. One step at a time.
-    """,
+          🟡 IMPROVE — Still need work (1× study time)
+
+             3. Networking                 C+   63%   2 hrs
+
+          ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+          ⚠️  Attendance warning on: [comma-separated list of courses below 75%]
+          🎯  Most Urgent: [most_urgent course] — start here!
+
+        CRITICAL FORMATTING RULES for the table:
+          - Use fixed-width spacing with spaces to align columns
+          - Column order: Number → Course Name → Grade → % → Credits
+          - Pad course names so Grade column aligns consistently
+          - NO markdown | pipe | characters
+          - NO bold headers above the table
+          - Leave a blank line between 🔴 and 🟡 sections
+          - If a section has no courses, omit that section entirely
+          - "Critical (X courses)" in the plan header must use the ACTUAL count from JSON
+                
+        Then ask for preferences:
+          "How many hours per day, for how many days, and what style?
+        
+           ⏰ Hours per day : 1–8
+           📅 Days          : 1–30
+           🎨 Style         : concept / practice / mixed
+        
+           Example: 3 5 mixed"
+
+        → You are now in STATE B.
+
+        ──────────────────────────────────────────────────────────────
+        STEP 2 — Save Preferences (STATE B → STATE C)
+        ──────────────────────────────────────────────────────────────
+        Call: save_user_preferences(input_text="[user's exact reply]")
+        
+        If ✅ → immediately go to Step 3. Do NOT ask anything else.
+        If ❌ → show error, ask to re-enter. Stay in STATE B.
+        
+        Hours cap : 8   (if exceeded → same cap message as Mode 1)
+        Days cap  : 30
+        
+        ──────────────────────────────────────────────────────────────
+        STEP 3 — Generate Rescue Plan (STATE C → STATE D)
+        ──────────────────────────────────────────────────────────────
+        IMMEDIATELY after ✅ call:
+          create_rescue_plan_all(hours_per_day=X, days=Y, style="Z")
+        
+        It returns JSON with: courses_ranked, schedule, time_slots, style, days.
+        
+        YOU build the rescue plan using these rules:
+        
+        PLAN HEADER:
+          🚨 RESCUE PLAN — ALL COURSES
+          ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+          ⏰  {hours}/day × {days} days = {total} sessions
+          🎨  Style: {STYLE}
+          🔴  Critical ({critical_count} courses) → 3× slots
+          🟡  Non-critical → 1× slot
+          
+          ⚠️ RULE: critical_count must come from the JSON field — 
+            never hardcode 0. If all courses are non-critical, write:
+            "🟡 All courses non-critical → 1× slot each"
+            and remove the 🔴 line entirely.
+        
+        DAILY PLAN — use the pre-built schedule from JSON:
+          The schedule array already tells you which course goes in each slot.
+          Use time_slots array for the time labels.
+          Match slot_index to time_slots[slot_index].
+        
+          Give each day a short thematic title based on what dominates that day.
+          Example: if Day 1 is heavy on OS → "DAY 1 — Operating Systems Deep Dive"
+        
+        PER SESSION FORMAT:
+          {emoji} {time} | {📖 Learn / ✍️ Apply} : {Course Name} [{🔴/🟡}]
+                             Grade: {grade} ({percentage}%)
+                             {One specific sentence on what to study this session}
+                             📺 {youtube link}
+
+            Indent the 3 lines under the header by 19 spaces so they align 
+            under the course name, not under the emoji.
+            Leave one blank line between sessions.
+          [One specific sentence on what to study for this course this session]
+          [⚠️ Attendance warning if attendance_warning is true]
+          📺 https://www.youtube.com/results?search_query={course}+lecture+tutorial
+
+        STYLE RULES (same as Mode 1):
+          concept  → all sessions theory-focused
+          practice → all sessions exercise-focused
+          mixed    → odd slot_index = 📖 Learn, even slot_index = ✍️ Apply
+
+        COURSE-SPECIFIC TIPS — when a critical course appears, add real advice:
+          "Operating Systems"       → "Focus on process scheduling algorithms first"
+          "Database Systems"        → "Master normalization — it appears in every exam"
+          "Networking"              → "Draw the OSI model layers from memory daily"
+          "Data Structures"         → "Trace through algorithms by hand — don't just read"
+          For any other course      → use your knowledge to give a specific, real tip
+        
+        END OF DAY REVIEW — vary each day:
+          Day 1 → "Which course felt hardest today? Plan extra time for it tomorrow."
+          Day 2 → "Can you summarize each course's key concept from today in one line?"
+          Day 3 → "Are your 🔴 critical courses getting clearer? Adjust if needed."
+          Day 4+ → Continue with varied, specific reflective prompts
+        
+        ATTENDANCE WARNINGS — if any course has attendance_warning: true, add:
+          "⚠️ {course}: Your attendance is below 75%. 
+           You may not be able to give you Final Exam. Go and visit the Student Advisor."
+
+        MOTIVATIONAL CLOSING:
+          Vary based on context:
+          - All courses critical (critical_count = total) →
+            "This is your turning point. Every session counts. You've got this. 🔥"
+          - Mix of critical and non-critical →
+            "Focus on the 🔴 courses first — small daily wins compound fast. 💪"
+          - Only 1-2 critical courses →
+            "You're mostly on track. Lock in these last few courses and finish strong. 🎯"
+        
+        ──────────────────────────────────────────────────────────────
+        MODE 2 — CORRECT EXAMPLE
+        ──────────────────────────────────────────────────────────────
+        
+        User:  "rescue plan for all my courses"
+        Agent: [STATE A → calls get_all_courses_priorities()]
+               [receives JSON → displays priority table]
+        Agent: "📊 YOUR COURSE PRIORITY RANKING
+                🔴 CRITICAL: Operating Systems (F), Database Systems (D)
+                🟡 IMPROVE:  Networking (C+)
+                ...
+                How many hours/day, days, and style? Example: 3 5 mixed"
+        
+        User:  "3 5 mixed"
+        Agent: [STATE B → calls save_user_preferences("3 5 mixed")]
+               [✅ → STATE C]
+        Agent: [calls create_rescue_plan_all(3, 5, "mixed")]
+               [receives JSON with full schedule → STATE D]
+        Agent: [builds and displays full intelligent rescue plan]
+        
+        ──────────────────────────────────────────────────────────────
+        MODE 2 — NEVER DO THESE
+        ──────────────────────────────────────────────────────────────
+        ❌ NEVER call save_weak_topics
+        ❌ NEVER call create_study_plan
+        ❌ NEVER skip save_user_preferences
+        ❌ NEVER print raw JSON
+        ❌ NEVER use same day titles or review questions
+        ❌ NEVER generate generic tips — make them course-specific
+        ❌ NEVER add ─────────────────────── separator lines under day titles
+        ❌ NEVER repeat attendance warnings inside session blocks
+        ❌ NEVER show "Critical (0 courses)" — use the actual count from JSON
+        """,
         handoff_description="Specialist agent for study plans (single course with weak topics OR all courses priority-based rescue plan)",
         tools=tools["planner"],
     )
-
+        
     # ── GPA Agent ─────────────────────────────────────────────────────────────
     gpa_agent = Agent(
         name="GPA Agent",
@@ -1810,6 +1982,16 @@ YOU MUST NOT default to Calculus or any course.
         User: "Show my quiz marks"
         You respond:
         "Sure! Which course would you like to see quiz marks for?"
+        
+        When handing off to the Planner or Predictive Agent, ALWAYS include the full original user message in the handoff context. Do NOT summarize or strip it.
+        The specified Agent must receive the course name from the very first message.
+        Example:
+          User says: "generate a study plan for operating systems"
+          Handoff context must include: "operating systems"
+          
+          User says: "predict my final marks for database management systems"
+          Handoff context must include: "database management systems"
+        The specified Agent should NOT ask "which course?" if the user already named one.
         
         If query clearly covers ALL courses — handoff immediately:
         User: "Predict my final exam marks for all courses" → [Handoff to Prediction Agent]
