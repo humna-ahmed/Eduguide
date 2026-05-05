@@ -11,7 +11,7 @@ import datetime
 # --------------------------------------------------
 # ADD PARENT DIRECTORY TO PYTHON PATH
 # --------------------------------------------------
-PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 sys.path.insert(0, PROJECT_ROOT)
 
 from backend.agentic_architecture.agent import build_agents, config, memory
@@ -34,6 +34,7 @@ st.markdown("""
 @import url('https://fonts.googleapis.com/css2?family=Poppins:wght@500;600;700&family=Lato:wght@300;400;700&display=swap');
 
 #MainMenu { visibility: hidden; }
+[data-testid="stSidebarNav"] { display: none !important; }
 footer { visibility: hidden; }
 
 /* ── Sidebar Toggle Button - Always Visible ── */
@@ -227,22 +228,48 @@ DB_PATH = os.path.join(PROJECT_ROOT, "backend", "database", "lms.db")
 # --------------------------------------------------
 # AUTH CHECK
 # --------------------------------------------------
-student_id = st.query_params.get("student_id")
+# NEW block (replace with this):
+import requests as _requests
 
 from backend.agentic_architecture.agent import clear_prediction_cache, clear_notes_store
 
-if student_id and st.session_state.get("current_student_id") != student_id:
+def _redirect_to_login():
+    for key in list(st.session_state.keys()):
+        del st.session_state[key]
+    st.switch_page("login.py")
+
+# Must have a session token stored from login
+session_token = st.session_state.get("session_token")
+student_id = st.session_state.get("student_id")
+
+if not session_token or not student_id:
+    st.error("🔒 Unauthorized Access — Please log in.")
+    st.stop()
+    _redirect_to_login()
+
+# Validate token with backend
+# Validate token with backend
+try:
+    val = _requests.post(
+        "http://127.0.0.1:5000/validate_session",
+        json={"session_token": session_token, "student_id": student_id},
+        timeout=5
+    )
+    if not val.json().get("valid"):
+        st.error("🔒 Session invalid or expired. Redirecting to login...")
+        _redirect_to_login()
+except Exception:
+    st.error("🔒 Could not validate session. Is auth server running?")
+    st.stop()
+
+# Reset state if student changed (shouldn't happen now, but safety net)
+if st.session_state.get("current_student_id") != student_id:
     clear_prediction_cache()
     clear_notes_store()
     st.session_state.current_student_id = student_id
     st.session_state.messages = []
     st.session_state.welcome_shown = False
     st.session_state.notes_filename = ""
-
-if not student_id:
-    st.error("🔒 Unauthorized Access")
-    st.warning("Please login through the authentication portal.")
-    st.stop()
 
 # --------------------------------------------------
 # DATABASE
@@ -354,17 +381,7 @@ body{{background:transparent;overflow:hidden;margin:0;}}
 }}
 .dd-name{{font-size:15px;font-weight:700;color:#fff;margin-bottom:2px;}}
 .dd-reg{{font-size:12px;color:rgba(255,255,255,.75);}}
-.logout-btn{{
-    display:flex;align-items:center;gap:10px;
-    width:100%;padding:14px 16px;
-    font-size:14px;font-weight:600;color:#dc2626;
-    border:none;border-top:1px solid #e2e8f0;
-    background:#fff;cursor:pointer;
-    font-family:'Poppins',sans-serif;
-    text-align:left;
-    transition:background .15s;
-}}
-.logout-btn:hover{{background:#fff1f1;}}
+
 </style>
 </head>
 <body>
@@ -417,15 +434,7 @@ function createParentDropdown(){{
             <div style="font-size:15px;font-weight:700;color:#fff;margin-bottom:2px;">{student_name}</div>
             <div style="font-size:12px;color:rgba(255,255,255,.75);">REG: {registration_no}</div>
         </div>
-        <button id="lms_logout_btn"
-            style="display:flex;align-items:center;gap:10px;width:100%;padding:14px 16px;
-                   font-size:14px;font-weight:600;color:#dc2626;border:none;
-                   border-top:1px solid #e2e8f0;background:#fff;cursor:pointer;
-                   font-family:Poppins,sans-serif;text-align:left;border-radius:0 0 12px 12px;"
-            onmouseover="this.style.background='#fff1f1'"
-            onmouseout="this.style.background='#fff'">
-            🚪 &nbsp;Logout
-        </button>
+       
     `;
     parentDd.style.cssText=`
         display:none;
@@ -504,11 +513,7 @@ window.addEventListener('resize',function(){{
 </script>
 <script>
 // This runs in the PARENT window context via postMessage
-window.parent.addEventListener('message', function(e) {{
-    if (e.data === 'lms_logout') {{
-        window.location.href = 'http://127.0.0.1:5000/';
-    }}
-}});
+
 </script>
 </body>
 </html>"""
@@ -543,13 +548,18 @@ with st.sidebar:
     st.markdown("---")
 
      # ADD THIS LOGOUT BUTTON
+    # NEW:
     if st.button("🚪 Logout", use_container_width=True, type="primary"):
-        # Clear session state
+        try:
+            import requests as _req
+            _req.post("http://127.0.0.1:5000/logout",
+                      json={"session_token": st.session_state.get("session_token")},
+                      timeout=3)
+        except Exception:
+            pass
         for key in list(st.session_state.keys()):
             del st.session_state[key]
-        # Redirect to login
-        st.markdown('<meta http-equiv="refresh" content="0; url=http://127.0.0.1:5000/">', unsafe_allow_html=True)
-        st.stop()
+        st.switch_page("login.py")
     
     st.markdown("---")
     
