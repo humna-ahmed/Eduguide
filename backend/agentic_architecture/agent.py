@@ -1243,7 +1243,7 @@ YOU MUST NOT default to Calculus or any course.
        - When asked for "full course data", show everything
     
     3. FOR ATTENDANCE:
-       - Always show both percentage and the raw numbers (X/Y classes)
+       - Always show percentage 
        - If attendance < 75%, add a clear ⚠️ WARNING
     
     ✅ **RESPONSE FORMAT REQUIREMENTS:**
@@ -1555,10 +1555,18 @@ YOU MUST NOT default to Calculus or any course.
 
           STEP 1: Build the weighted pool FIRST, before planning anything:
             - Take ONLY topics from the "all_topics" JSON field
+            - ALL topics from "all_topics" MUST appear in the pool — no topic is skipped
             - For each topic in "weak_topics" → add it to the pool 3 TIMES
             - For each topic NOT in "weak_topics" → add it 1 TIME
-            - Example: weak=[A,B], others=[C,D,E]
+            - Example: all_topics=[A,B,C,D,E], weak=[A,B]
               Pool = [A, A, A, B, B, B, C, D, E] → 9 items total
+  
+            ⛔ CRITICAL: If "all_topics" has 16 topics and 2 are weak:
+              Pool size = (2×3) + (14×1) = 20 items
+              ALL 16 topics appear. The 14 non-weak topics each appear once.
+              Do NOT build a pool from weak_topics only.
+              Do NOT skip non-weak topics.
+              A pool containing only weak topics is ALWAYS wrong.
 
           STEP 2: Count total_slots = hours_per_day × days
 
@@ -1643,29 +1651,12 @@ YOU MUST NOT default to Calculus or any course.
           [Repeat for all days]
           
           
-        OUTPUT FORMAT — MANDATORY:
+          OUTPUT FORMAT:
 
-        Do NOT output the plan as plain text or markdown.
-        Do NOT output raw HTML as text.
-
-        You must call the Claude artifact tool and create a React (JSX) artifact.
-        The artifact renders the plan as a structured UI with cards and columns.
-
-        Use this EXACT structure in the artifact:
-
-        - Plan header card: title, meta pills (sessions/day, days, style), weak areas as orange tags
-        - One card per day: left column = time + emoji (fixed 110px), right column = content
-        - Each session row: type badge (Learn = green, Apply = blue) + topic name + weak flag if applicable
-        - Below each topic: description, tip (if weak), YouTube link
-        - After each day's card: a review row in a muted background strip
-        - Final tips card at the bottom with a motivational closing line
-        
-        The artifact must use only inline styles or a <style> block.
-        It must use CSS variables: var(--color-background-primary), var(--color-text-primary),
-        var(--color-border-tertiary), var(--color-background-secondary), var(--border-radius-lg), etc.
-        This ensures it renders correctly in light and dark mode on Claude.ai.
-
-        NEVER output the plan any other way. The artifact is the only acceptable output format.
+          Output the plan as plain text using the markdown formatting 
+          shown in the PLAN FORMAT section above.
+          Do NOT create any artifact, React component, HTML, or code block.
+          Write the plan directly in your response as formatted text.
          
           ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
           💡 FINAL TIPS
@@ -1791,30 +1782,12 @@ YOU MUST NOT default to Calculus or any course.
         YOU build the rescue plan using these rules:
         
         
-        OUTPUT FORMAT — MANDATORY:
+        OUTPUT FORMAT:
 
-        Do NOT output the plan as plain text or markdown.
-        Do NOT output raw HTML as text.
-
-        You must call the Claude artifact tool and create a React (JSX) artifact.
-        The artifact renders the plan as a structured UI with cards and columns.
-
-        Use this EXACT structure in the artifact:
-
-        - Plan header card: title, meta pills (sessions/day, days, style), weak areas as orange tags
-        - One card per day: left column = time + emoji (fixed 110px), right column = content
-        - Each session row: type badge (Learn = green, Apply = blue) + topic name + weak flag if applicable
-        - Below each topic: description, tip (if weak), YouTube link
-        - After each day's card: a review row in a muted background strip
-        - Final tips card at the bottom with a motivational closing line
-
-        The artifact must use only inline styles or a <style> block.
-        It must use CSS variables: var(--color-background-primary), var(--color-text-primary),
-        var(--color-border-tertiary), var(--color-background-secondary), var(--border-radius-lg), etc.
-        This ensures it renders correctly in light and dark mode on Claude.ai.
-
-        NEVER output the plan any other way. The artifact is the only acceptable output format.
-        
+        Output the plan as plain text using the markdown formatting 
+        shown in the PLAN FORMAT section above.
+        Do NOT create any artifact, React component, HTML, or code block.
+        Write the plan directly in your response as formatted text.
         
         PLAN HEADER:
           🚨 RESCUE PLAN — ALL COURSES
@@ -2080,9 +2053,12 @@ YOU MUST NOT default to Calculus or any course.
         You respond:
         "Sure! Which course would you like to see quiz marks for?"
         
-        When handing off to the Planner or Predictive Agent, ALWAYS include the full original user message in the handoff context. Do NOT summarize or strip it.
+        When handing off to the Planner or Predictive or LMS Agent, ALWAYS include the full original user message in the handoff context. Do NOT summarize or strip it.
         The specified Agent must receive the course name from the very first message.
         Example:
+          User says: "what is my attendance of operating systems"
+          Handoff context must include: "operating systems"
+        
           User says: "generate a study plan for operating systems"
           Handoff context must include: "operating systems"
           
